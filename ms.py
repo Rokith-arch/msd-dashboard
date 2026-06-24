@@ -132,7 +132,7 @@ PLATFORMS = {
     },
     "REE": {
         "icon": "📨",
-        "module": "ree_dashboard",
+        "module": "ree_dashboardwwe",
         "desc": "REE email — Delivered, Opens, Clicks, Bounced & Dropped",
         "cols": "STATUS · Month · Campaign · TA · MARKET · Opens · Clicks",
         "color": "#1A6FAF"
