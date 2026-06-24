@@ -111,6 +111,32 @@ def split_by_status(df):
 
 def build_dashboard(df, output_path):
 
+    # ── Embed full raw dataset for client-side filtering ────────────────
+    raw_cols = [c for c in [COL_STATUS, COL_MONTH, COL_CAMPAIGN, COL_TA, COL_MARKET, COL_OPENS, COL_CLICKS] if c in df.columns]
+    raw_df = df[raw_cols].copy()
+    # Fill NaN so JSON serialises cleanly
+    for col in [COL_OPENS, COL_CLICKS]:
+        if col in raw_df.columns:
+            raw_df[col] = raw_df[col].fillna(0).astype(int)
+    for col in [COL_STATUS, COL_MONTH, COL_CAMPAIGN, COL_TA, COL_MARKET]:
+        if col in raw_df.columns:
+            raw_df[col] = raw_df[col].fillna("").astype(str)
+    raw_json = raw_df.to_json(orient="records")
+
+    # ── All unique months + campaigns + TAs for dropdowns ───────────────
+    all_months = [m for m in MONTH_ORDER if COL_MONTH in df.columns and m in df[COL_MONTH].values]
+    if COL_CAMPAIGN in df.columns:
+        all_campaigns_raw = sorted(df[COL_CAMPAIGN].dropna().unique().tolist())
+        all_campaigns = [c for c in all_campaigns_raw
+                         if str(c).strip().lower() not in ['nan','','unassigned'] + list(EXCLUDED_CAMPAIGNS)]
+    else:
+        all_campaigns = []
+    if COL_TA in df.columns:
+        all_ta = sorted([t for t in df[COL_TA].dropna().unique().tolist()
+                         if str(t).strip().lower() not in ['nan','','unassigned']])
+    else:
+        all_ta = []
+
     delivered_df, bounced_df, dropped_df = split_by_status(df)
 
     # ── Summary KPIs ────────────────────────────────────────────────────
@@ -437,7 +463,21 @@ def build_dashboard(df, output_path):
       </div>
       <span class="note-pill">📊 Opens &amp; Clicks reflect delivered-status rows only · Bounced &amp; Dropped from STATUS column</span>
     </div>
-    <span class="month-pill">📅 {month_range}</span>
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+      <span class="month-pill">📅 {month_range}</span>
+      <select id="filterMonth" onchange="applyFilters()" style="background:#1A3A5C;color:#fff;border:1.5px solid rgba(255,255,255,0.45);border-radius:20px;padding:6px 32px 6px 14px;font-family:'Raleway',sans-serif;font-size:12px;cursor:pointer;outline:none;appearance:auto;-webkit-appearance:auto;">
+        <option value="" style="background:#1A3A5C;color:#fff;">📅 All Months</option>
+        {''.join(f'<option value="{m}" style="background:#1A3A5C;color:#fff;">{m}</option>' for m in all_months)}
+      </select>
+      <select id="filterCampaign" onchange="applyFilters()" style="background:#1A3A5C;color:#fff;border:1.5px solid rgba(255,255,255,0.45);border-radius:20px;padding:6px 32px 6px 14px;font-family:'Raleway',sans-serif;font-size:12px;cursor:pointer;outline:none;appearance:auto;-webkit-appearance:auto;max-width:220px;">
+        <option value="" style="background:#1A3A5C;color:#fff;">📣 All Campaigns</option>
+        {''.join(f'<option value="{c}" style="background:#1A3A5C;color:#fff;">{c}</option>' for c in all_campaigns)}
+      </select>
+      <select id="filterTA" onchange="applyFilters()" style="background:#1A3A5C;color:#fff;border:1.5px solid rgba(255,255,255,0.45);border-radius:20px;padding:6px 32px 6px 14px;font-family:'Raleway',sans-serif;font-size:12px;cursor:pointer;outline:none;appearance:auto;-webkit-appearance:auto;max-width:180px;">
+        <option value="" style="background:#1A3A5C;color:#fff;">🧬 All TAs</option>
+        {''.join(f'<option value="{t}" style="background:#1A3A5C;color:#fff;">{t}</option>' for t in all_ta)}
+      </select>
+    </div>
   </div>
 
   <div class="dash-body">
@@ -447,32 +487,32 @@ def build_dashboard(df, output_path):
     <div class="metric-grid">
       <div class="metric-card c1">
         <div class="metric-label">Total Delivered</div>
-        <div class="metric-value">{fmt(total_delivered)}</div>
+        <div class="metric-value" id="kpi-delivered">—</div>
         <div class="metric-sub">Emails delivered</div>
       </div>
       <div class="metric-card c2">
         <div class="metric-label">Total Opens</div>
-        <div class="metric-value">{fmt(total_opens)}</div>
+        <div class="metric-value" id="kpi-opens">—</div>
         <div class="metric-sub">On delivered only</div>
       </div>
       <div class="metric-card c3">
         <div class="metric-label">Open Rate</div>
-        <div class="metric-value">{or_rate}%</div>
+        <div class="metric-value" id="kpi-or">—</div>
         <div class="metric-sub">Opens / Delivered</div>
       </div>
       <div class="metric-card c4">
         <div class="metric-label">Total Clicks</div>
-        <div class="metric-value">{fmt(total_clicks)}</div>
+        <div class="metric-value" id="kpi-clicks">—</div>
         <div class="metric-sub">On delivered only</div>
       </div>
       <div class="metric-card c5">
         <div class="metric-label">Bounced</div>
-        <div class="metric-value">{fmt(total_bounced)}</div>
+        <div class="metric-value" id="kpi-bounced">—</div>
         <div class="metric-sub">STATUS = bounced</div>
       </div>
       <div class="metric-card c6">
         <div class="metric-label">Dropped</div>
-        <div class="metric-value">{fmt(total_dropped)}</div>
+        <div class="metric-value" id="kpi-dropped">—</div>
         <div class="metric-sub">STATUS = dropped</div>
       </div>
     </div>
@@ -483,26 +523,17 @@ def build_dashboard(df, output_path):
       <div class="insight-card">
         <div class="insight-icon">📬</div>
         <div class="insight-title">Delivery Health</div>
-        <div class="insight-text">
-          <strong>{fmt(total_delivered)}</strong> emails successfully delivered.
-          Bounce rate: <strong>{pct(total_bounced, total_delivered + total_bounced + total_dropped)}%</strong> ·
-          Drop rate: <strong>{pct(total_dropped, total_delivered + total_bounced + total_dropped)}%</strong>
-        </div>
+        <div class="insight-text" id="insight-health">—</div>
       </div>
       <div class="insight-card">
         <div class="insight-icon">👁️</div>
         <div class="insight-title">Engagement</div>
-        <div class="insight-text">
-          Open rate of <strong>{or_rate}%</strong> with CTR of <strong>{ctr_rate}%</strong>.
-          Click-to-open ratio: <strong>{pct(total_clicks, total_opens)}%</strong>
-        </div>
+        <div class="insight-text" id="insight-engagement">—</div>
       </div>
       <div class="insight-card">
         <div class="insight-icon">🏆</div>
         <div class="insight-title">Top Campaign</div>
-        <div class="insight-text">
-          {f'<strong>{camp_rows[0][0]}</strong> leads with <strong>{camp_rows[0][3]}%</strong> open rate ({camp_rows[0][1]:,} delivered)' if camp_rows else 'No campaign data available'}
-        </div>
+        <div class="insight-text" id="insight-topcampaign">—</div>
       </div>
     </div>
 
@@ -589,7 +620,7 @@ def build_dashboard(df, output_path):
           <th>Campaign</th><th>Delivered</th><th>Opens</th>
           <th>OR %</th><th>Clicks</th><th>CTR %</th>
         </tr></thead>
-        <tbody>{rows_camp}</tbody>
+        <tbody id="campTableBody"></tbody>
       </table>
     </div>
 
@@ -601,7 +632,7 @@ def build_dashboard(df, output_path):
           <th>TA</th><th>Delivered</th><th>Opens</th>
           <th>OR %</th><th>Clicks</th><th>CTR %</th>
         </tr></thead>
-        <tbody>{rows_ta}</tbody>
+        <tbody id="taTableBody"></tbody>
       </table>
     </div>
 
@@ -616,318 +647,472 @@ Chart.register(ChartDataLabels);
 const MONTSERRAT = 'Montserrat, sans-serif';
 const RALEWAY    = 'Raleway, sans-serif';
 
-// ── 1. Monthly combo: Delivered bar + OR% + CTR% lines ───────────────
-// tension: 0 = straight lines, labels offset top/bottom to prevent overlap
-new Chart(document.getElementById('trendChart'), {{
-  data: {{
-    labels: {json.dumps(trend_labels)},
-    datasets: [
-      {{
-        type: 'bar', label: 'Delivered', data: {json.dumps(trend_delivered)},
-        backgroundColor: '#CFE3F0', borderRadius: 6, borderSkipped: false,
-        yAxisID: 'y', order: 2,
-        datalabels: {{
-          anchor: 'center', align: 'center',
-          color: '#0A2540', font: {{ size: 10, weight: '600', family: MONTSERRAT }},
-          formatter: v => v >= 1000 ? (v/1000).toFixed(1)+'K' : v
+// ── Raw data from Python ─────────────────────────────────────────────────
+const RAW_DATA      = {raw_json};
+const MONTH_ORDER   = {json.dumps(MONTH_ORDER)};
+const EXCLUDED_CAMP = {json.dumps(list(EXCLUDED_CAMPAIGNS))};
+const MIN_DELIVERED = {MIN_DELIVERED_FOR_RANKING};
+const TOP_N         = {TOP_N_CAMPAIGNS};
+const STATUS_DEL    = "delivered";
+const STATUS_BNC    = "bounced";
+const STATUS_DRP    = "dropped";
+const COL_STATUS    = "{COL_STATUS}";
+const COL_MONTH     = "{COL_MONTH}";
+const COL_CAMPAIGN  = "{COL_CAMPAIGN}";
+const COL_TA        = "{COL_TA}";
+const COL_MARKET    = "{COL_MARKET}";
+const COL_OPENS     = "{COL_OPENS}";
+const COL_CLICKS    = "{COL_CLICKS}";
+
+// ── Helpers ──────────────────────────────────────────────────────────────
+function fmt(n) {{
+  if (n >= 1e6) return (n/1e6).toFixed(1)+'M';
+  if (n >= 1e3) return (n/1e3).toFixed(1)+'K';
+  return Math.round(n).toString();
+}}
+function pct(num, den) {{ return den ? Math.round(num/den*1000)/10 : 0.0; }}
+
+// ── Chart instances ──────────────────────────────────────────────────────
+let chartTrend, chartBD, chartHealth, chartCamp, chartTADonut, chartTARadar, chartMkt, chartMktOR;
+
+function getOrCreate(id, config) {{
+  const el = document.getElementById(id);
+  const existing = Chart.getChart(el);
+  if (existing) existing.destroy();
+  return new Chart(el, config);
+}}
+
+// ── Core: filter + recompute + redraw ────────────────────────────────────
+function applyFilters() {{
+  const selMonth    = document.getElementById('filterMonth').value;
+  const selCampaign = document.getElementById('filterCampaign').value;
+  const selTA       = document.getElementById('filterTA').value;
+
+  // Filter rows
+  let rows = RAW_DATA;
+  if (selMonth)    rows = rows.filter(r => r[COL_MONTH]    === selMonth);
+  if (selCampaign) rows = rows.filter(r => r[COL_CAMPAIGN] === selCampaign);
+  if (selTA)       rows = rows.filter(r => r[COL_TA]       === selTA);
+
+  const delivered = rows.filter(r => r[COL_STATUS] === STATUS_DEL);
+  const bounced   = rows.filter(r => r[COL_STATUS] === STATUS_BNC);
+  const dropped   = rows.filter(r => r[COL_STATUS] === STATUS_DRP);
+
+  // ── KPIs ──────────────────────────────────────────────────────────────
+  const totDel  = delivered.length;
+  const totOpen = delivered.reduce((s,r) => s + (r[COL_OPENS]||0), 0);
+  const totClk  = delivered.reduce((s,r) => s + (r[COL_CLICKS]||0), 0);
+  const totBnc  = bounced.length;
+  const totDrp  = dropped.length;
+  const orRate  = pct(totOpen, totDel);
+  const ctrRate = pct(totClk,  totDel);
+  const ctoRate = pct(totClk,  totOpen);
+  const total   = totDel + totBnc + totDrp;
+
+  document.getElementById('kpi-delivered').textContent = fmt(totDel);
+  document.getElementById('kpi-opens').textContent     = fmt(totOpen);
+  document.getElementById('kpi-or').textContent        = orRate + '%';
+  document.getElementById('kpi-clicks').textContent    = fmt(totClk);
+  document.getElementById('kpi-bounced').textContent   = fmt(totBnc);
+  document.getElementById('kpi-dropped').textContent   = fmt(totDrp);
+
+  // ── Insights ──────────────────────────────────────────────────────────
+  document.getElementById('insight-health').innerHTML =
+    `<strong>${{fmt(totDel)}}</strong> emails successfully delivered. ` +
+    `Bounce rate: <strong>${{pct(totBnc,total)}}%</strong> · Drop rate: <strong>${{pct(totDrp,total)}}%</strong>`;
+  document.getElementById('insight-engagement').innerHTML =
+    `Open rate of <strong>${{orRate}}%</strong> with CTR of <strong>${{ctrRate}}%</strong>. ` +
+    `Click-to-open ratio: <strong>${{ctoRate}}%</strong>`;
+
+  // ── Monthly trend ─────────────────────────────────────────────────────
+  const monthMap = {{}};
+  for (const r of delivered) {{
+    const m = r[COL_MONTH];
+    if (!MONTH_ORDER.includes(m)) continue;
+    if (!monthMap[m]) monthMap[m] = {{del:0,open:0,clk:0}};
+    monthMap[m].del++;
+    monthMap[m].open += r[COL_OPENS]||0;
+    monthMap[m].clk  += r[COL_CLICKS]||0;
+  }}
+  const trendMonths = MONTH_ORDER.filter(m => monthMap[m] && monthMap[m].del > 0);
+  const trendDel  = trendMonths.map(m => monthMap[m].del);
+  const trendOR   = trendMonths.map(m => pct(monthMap[m].open, monthMap[m].del));
+  const trendCTR  = trendMonths.map(m => pct(monthMap[m].clk,  monthMap[m].del));
+
+  const bncMap = {{}}, drpMap = {{}};
+  for (const r of bounced) {{ bncMap[r[COL_MONTH]] = (bncMap[r[COL_MONTH]]||0)+1; }}
+  for (const r of dropped) {{ drpMap[r[COL_MONTH]] = (drpMap[r[COL_MONTH]]||0)+1; }}
+  const trendBnc = trendMonths.map(m => bncMap[m]||0);
+  const trendDrp = trendMonths.map(m => drpMap[m]||0);
+
+  const allRates = [...trendOR,...trendCTR];
+  const sugMax   = allRates.length ? Math.round(Math.max(...allRates)*2.2*10)/10 : 10;
+
+  // ── Campaign grouping ─────────────────────────────────────────────────
+  const campMap = {{}};
+  for (const r of delivered) {{
+    const c = (r[COL_CAMPAIGN]||'').trim();
+    if (!c || c.toLowerCase() === 'nan' || c.toLowerCase() === 'unassigned') continue;
+    if (EXCLUDED_CAMP.includes(c.toLowerCase())) continue;
+    if (!campMap[c]) campMap[c] = {{del:0,open:0,clk:0}};
+    campMap[c].del++;
+    campMap[c].open += r[COL_OPENS]||0;
+    campMap[c].clk  += r[COL_CLICKS]||0;
+  }}
+  const campArr = Object.entries(campMap)
+    .filter(([,v]) => v.del >= MIN_DELIVERED)
+    .map(([name,v]) => ({{name, del:v.del, open:v.open, clk:v.clk,
+      or:pct(v.open,v.del), ctr:pct(v.clk,v.del)}}))
+    .sort((a,b) => b.or - a.or)
+    .slice(0, TOP_N);
+
+  const campLabels = campArr.map(c=>c.name);
+  const campOR     = campArr.map(c=>c.or);
+  const campCTR    = campArr.map(c=>c.ctr);
+  const nCamp = Math.max(campArr.length,1);
+  const campColors = campArr.map((_,i) => {{
+    const t = i/Math.max(nCamp-1,1);
+    const r = Math.round(0x00 + t*(0xB7-0x00));
+    const g = Math.round(0x85 + t*(0xDD-0x85));
+    const b = Math.round(0x7B + t*(0xD8-0x7B));
+    return `rgb(${{r}},${{g}},${{b}})`;
+  }});
+
+  // Top campaign insight
+  if (campArr.length) {{
+    const top = campArr[0];
+    document.getElementById('insight-topcampaign').innerHTML =
+      `<strong>${{top.name}}</strong> leads with <strong>${{top.or}}%</strong> open rate (${{top.del.toLocaleString()}} delivered)`;
+  }} else {{
+    document.getElementById('insight-topcampaign').innerHTML = 'No campaign data for this selection';
+  }}
+
+  // ── TA grouping ───────────────────────────────────────────────────────
+  const taMap = {{}};
+  for (const r of delivered) {{
+    const t = (r[COL_TA]||'').trim();
+    if (!t || t.toLowerCase()==='nan' || t.toLowerCase()==='unassigned') continue;
+    if (!taMap[t]) taMap[t] = {{del:0,open:0,clk:0}};
+    taMap[t].del++;
+    taMap[t].open += r[COL_OPENS]||0;
+    taMap[t].clk  += r[COL_CLICKS]||0;
+  }}
+  const taArr = Object.entries(taMap)
+    .filter(([,v]) => v.del > 0)
+    .map(([name,v]) => ({{name, del:v.del, open:v.open, clk:v.clk,
+      or:pct(v.open,v.del), ctr:pct(v.clk,v.del)}}))
+    .sort((a,b) => b.del - a.del);
+  const taLabels    = taArr.map(t=>t.name);
+  const taDel       = taArr.map(t=>t.del);
+  const taOR        = taArr.map(t=>t.or);
+  const taCTR       = taArr.map(t=>t.ctr);
+  const taDonutColors = ["#00857B","#0A2540","#1A6FAF","#1B8A4E","#0EA5A0","#7C5CBF","#C2410C","#D97706","#059669"];
+
+  // ── Market grouping ───────────────────────────────────────────────────
+  const mktMap = {{}};
+  for (const r of delivered) {{
+    const m = (r[COL_MARKET]||'').trim();
+    if (!m || m.toLowerCase()==='nan' || m.toLowerCase()==='unassigned') continue;
+    if (!mktMap[m]) mktMap[m] = {{del:0,open:0,clk:0}};
+    mktMap[m].del++;
+    mktMap[m].open += r[COL_OPENS]||0;
+    mktMap[m].clk  += r[COL_CLICKS]||0;
+  }}
+  const mktArr = Object.entries(mktMap)
+    .filter(([,v]) => v.del > 0)
+    .map(([name,v]) => ({{name, del:v.del, or:pct(v.open,v.del)}}))
+    .sort((a,b) => b.del - a.del)
+    .slice(0, 12);
+  const mktLabels = mktArr.map(m=>m.name);
+  const mktDel    = mktArr.map(m=>m.del);
+  const mktOR     = mktArr.map(m=>m.or);
+  const mktBarColors = ["#00857B","#1A6FAF","#0EA5A0","#1B8A4E","#7C5CBF","#C2410C","#D97706","#059669","#0A2540","#64748B","#F59E0B","#6366F1"];
+
+  // ── Tables ────────────────────────────────────────────────────────────
+  document.getElementById('campTableBody').innerHTML = campArr.map((c,i) =>
+    `<tr><td><span class="rank">${{i+1}}</span>${{c.name}}</td>
+     <td>${{c.del.toLocaleString()}}</td><td>${{c.open.toLocaleString()}}</td>
+     <td class="rate">${{c.or}}%</td><td>${{c.clk.toLocaleString()}}</td>
+     <td class="rate">${{c.ctr}}%</td></tr>`).join('') || '<tr><td colspan="6" style="text-align:center;color:#94A3B8;padding:16px">No campaigns meet the minimum delivered threshold for this filter</td></tr>';
+
+  document.getElementById('taTableBody').innerHTML = taArr.map(t =>
+    `<tr><td>${{t.name}}</td>
+     <td>${{t.del.toLocaleString()}}</td><td>${{t.open.toLocaleString()}}</td>
+     <td class="rate">${{t.or}}%</td><td>${{t.clk.toLocaleString()}}</td>
+     <td class="rate">${{t.ctr}}%</td></tr>`).join('') || '<tr><td colspan="6" style="text-align:center;color:#94A3B8;padding:16px">No data for this filter</td></tr>';
+
+  // ── Charts ────────────────────────────────────────────────────────────
+
+  // 1. Trend combo
+  chartTrend = getOrCreate('trendChart', {{
+    data: {{
+      labels: trendMonths,
+      datasets: [
+        {{
+          type:'bar', label:'Delivered', data:trendDel,
+          backgroundColor:'#CFE3F0', borderRadius:6, borderSkipped:false,
+          yAxisID:'y', order:2,
+          datalabels:{{ anchor:'center', align:'center', color:'#0A2540',
+            font:{{size:10,weight:'600',family:MONTSERRAT}},
+            formatter:v => v>=1000?(v/1000).toFixed(1)+'K':v }}
+        }},
+        {{
+          type:'line', label:'OR %', data:trendOR,
+          borderColor:'#00857B', backgroundColor:'#00857B', tension:0,
+          pointRadius:5, pointBackgroundColor:'#00857B', borderWidth:2.5,
+          yAxisID:'y1', order:1,
+          datalabels:{{ align:'top', anchor:'end', offset:6,
+            color:'#00857B', font:{{size:10,weight:'600',family:MONTSERRAT}},
+            formatter:v=>v+'%' }}
+        }},
+        {{
+          type:'line', label:'CTR %', data:trendCTR,
+          borderColor:'#1A6FAF', backgroundColor:'#1A6FAF', tension:0,
+          pointRadius:5, pointBackgroundColor:'#1A6FAF', borderWidth:2.5,
+          yAxisID:'y1', order:1,
+          datalabels:{{ align:'bottom', anchor:'end', offset:6,
+            color:'#1A6FAF', font:{{size:10,weight:'600',family:MONTSERRAT}},
+            formatter:v=>v+'%' }}
         }}
-      }},
-      {{
-        type: 'line', label: 'OR %', data: {json.dumps(trend_or)},
-        borderColor: '#00857B', backgroundColor: '#00857B',
-        tension: 0,
-        pointRadius: 5, pointBackgroundColor: '#00857B', borderWidth: 2.5,
-        yAxisID: 'y1', order: 1,
-        datalabels: {{
-          align: 'top', anchor: 'end', offset: 6,
-          color: '#00857B', font: {{ size: 10, weight: '600', family: MONTSERRAT }},
-          formatter: v => v + '%'
-        }}
-      }},
-      {{
-        type: 'line', label: 'CTR %', data: {json.dumps(trend_ctr)},
-        borderColor: '#1A6FAF', backgroundColor: '#1A6FAF',
-        tension: 0,
-        pointRadius: 5, pointBackgroundColor: '#1A6FAF', borderWidth: 2.5,
-        yAxisID: 'y1', order: 1,
-        datalabels: {{
-          align: 'bottom', anchor: 'end', offset: 6,
-          color: '#1A6FAF', font: {{ size: 10, weight: '600', family: MONTSERRAT }},
-          formatter: v => v + '%'
-        }}
-      }}
-    ]
-  }},
-  options: {{
-    responsive: true, maintainAspectRatio: false,
-    layout: {{ padding: {{ top: 30, bottom: 16 }} }},
-    interaction: {{ mode: 'index', intersect: false }},
-    plugins: {{
-      legend: {{ position: 'top', align: 'end',
-        labels: {{ color: '#334155', font: {{ size: 11, family: RALEWAY }}, boxWidth: 12, usePointStyle: true }} }},
-      tooltip: {{
-        enabled: true,
-        bodyFont: {{ family: MONTSERRAT, size: 12 }},
-        titleFont: {{ family: RALEWAY, size: 12 }}
-      }}
+      ]
     }},
-    scales: {{
-      x: {{ grid: {{ display: false }}, ticks: {{ color: '#64748B', font: {{ size: 11, family: RALEWAY }} }} }},
-      y: {{
-        position: 'left', grid: {{ color: 'rgba(0,0,0,0.05)' }},
-        ticks: {{ color: '#64748B', font: {{ size: 10, family: MONTSERRAT }},
-          callback: v => v >= 1000 ? (v/1000).toFixed(0)+'K' : v }},
-        title: {{ display: true, text: 'Delivered', color: '#94A3B8', font: {{ size: 10, family: RALEWAY }} }}
+    options:{{
+      responsive:true, maintainAspectRatio:false,
+      layout:{{padding:{{top:30,bottom:16}}}},
+      interaction:{{mode:'index',intersect:false}},
+      plugins:{{
+        legend:{{position:'top',align:'end',
+          labels:{{color:'#334155',font:{{size:11,family:RALEWAY}},boxWidth:12,usePointStyle:true}}}},
+        tooltip:{{enabled:true,bodyFont:{{family:MONTSERRAT,size:12}},titleFont:{{family:RALEWAY,size:12}}}}
       }},
-      y1: {{
-        position: 'right', min: 0,
-        suggestedMax: {suggested_max_rate},
-        grid: {{ display: false }},
-        ticks: {{ color: '#64748B', font: {{ size: 10, family: MONTSERRAT }}, callback: v => v+'%' }},
-        title: {{ display: true, text: 'Rate %', color: '#94A3B8', font: {{ size: 10, family: RALEWAY }} }}
+      scales:{{
+        x:{{grid:{{display:false}},ticks:{{color:'#64748B',font:{{size:11,family:RALEWAY}}}}}},
+        y:{{position:'left',grid:{{color:'rgba(0,0,0,0.05)'}},
+          ticks:{{color:'#64748B',font:{{size:10,family:MONTSERRAT}},callback:v=>v>=1000?(v/1000).toFixed(0)+'K':v}},
+          title:{{display:true,text:'Delivered',color:'#94A3B8',font:{{size:10,family:RALEWAY}}}}}},
+        y1:{{position:'right',min:0,suggestedMax:sugMax,grid:{{display:false}},
+          ticks:{{color:'#64748B',font:{{size:10,family:MONTSERRAT}},callback:v=>v+'%'}},
+          title:{{display:true,text:'Rate %',color:'#94A3B8',font:{{size:10,family:RALEWAY}}}}}}
       }}
     }}
-  }}
-}});
+  }});
 
-// ── 2. Bounce + Drop stacked bar ─────────────────────────────────────
-new Chart(document.getElementById('bdChart'), {{
-  type: 'bar',
-  data: {{
-    labels: {json.dumps(trend_labels)},
-    datasets: [
-      {{
-        label: 'Bounced', data: {json.dumps(trend_bounced)},
-        backgroundColor: '#E53E3E', borderRadius: 4, borderSkipped: false, stack: 'bd',
-        datalabels: {{
-          anchor: 'center', align: 'center', color: '#fff',
-          font: {{ size: 10, weight: '600', family: MONTSERRAT }},
-          formatter: (v, ctx) => {{
-            const total = ctx.chart.data.datasets.reduce((s, ds) => s + (ds.data[ctx.dataIndex] || 0), 0);
-            return total > 0 && v > 0 ? v : '';
+  // 2. Bounce + Drop stacked
+  chartBD = getOrCreate('bdChart', {{
+    type:'bar',
+    data:{{
+      labels:trendMonths,
+      datasets:[
+        {{
+          label:'Bounced', data:trendBnc,
+          backgroundColor:'#E53E3E', borderRadius:4, borderSkipped:false, stack:'bd',
+          datalabels:{{anchor:'center',align:'center',color:'#fff',
+            font:{{size:10,weight:'600',family:MONTSERRAT}},
+            formatter:(v,ctx)=>{{
+              const total=ctx.chart.data.datasets.reduce((s,ds)=>s+(ds.data[ctx.dataIndex]||0),0);
+              return total>0&&v>0?v:'';
+            }}}}
+        }},
+        {{
+          label:'Dropped', data:trendDrp,
+          backgroundColor:'#D97706', borderRadius:4, borderSkipped:false, stack:'bd',
+          datalabels:{{anchor:'center',align:'center',color:'#fff',
+            font:{{size:10,weight:'600',family:MONTSERRAT}},
+            formatter:v=>v>0?v:''}}
+        }}
+      ]
+    }},
+    options:{{
+      responsive:true, maintainAspectRatio:false,
+      layout:{{padding:{{top:10}}}},
+      plugins:{{
+        legend:{{position:'top',align:'end',
+          labels:{{color:'#334155',font:{{size:11,family:RALEWAY}},boxWidth:12,usePointStyle:true}}}},
+        tooltip:{{bodyFont:{{family:MONTSERRAT,size:12}},titleFont:{{family:RALEWAY,size:12}}}}
+      }},
+      scales:{{
+        x:{{stacked:true,grid:{{display:false}},ticks:{{color:'#64748B',font:{{size:11,family:RALEWAY}}}}}},
+        y:{{stacked:true,grid:{{color:'rgba(0,0,0,0.05)'}},
+          ticks:{{color:'#64748B',font:{{size:10,family:MONTSERRAT}}}}}}
+      }}
+    }}
+  }});
+
+  // 3. Health donut
+  chartHealth = getOrCreate('healthDonut', {{
+    type:'doughnut',
+    data:{{
+      labels:['Delivered','Bounced','Dropped'],
+      datasets:[{{
+        data:[totDel,totBnc,totDrp],
+        backgroundColor:['#00857B','#E53E3E','#D97706'],
+        borderColor:'#fff', borderWidth:2
+      }}]
+    }},
+    options:{{
+      responsive:true, maintainAspectRatio:false, cutout:'62%',
+      plugins:{{
+        legend:{{position:'bottom',
+          labels:{{color:'#334155',font:{{size:11,family:RALEWAY}},boxWidth:10,padding:10}}}},
+        datalabels:{{
+          color:'#fff', font:{{size:11,weight:'700',family:MONTSERRAT}},
+          formatter:(v,ctx)=>{{
+            const tot=ctx.chart.data.datasets[0].data.reduce((a,b)=>a+b,0);
+            const p=tot?(v/tot*100):0;
+            return p>=5?p.toFixed(1)+'%':'';
           }}
         }}
+      }}
+    }}
+  }});
+
+  // 4. Campaign bar
+  chartCamp = getOrCreate('campChart', {{
+    type:'bar',
+    data:{{
+      labels:campLabels,
+      datasets:[{{
+        data:campOR, backgroundColor:campColors,
+        borderRadius:5, borderSkipped:false
+      }}]
+    }},
+    options:{{
+      indexAxis:'y', responsive:true, maintainAspectRatio:false,
+      layout:{{padding:{{right:40}}}},
+      plugins:{{
+        legend:{{display:false}},
+        datalabels:{{anchor:'end',align:'end',
+          color:'#0A2540',font:{{size:10,weight:'600',family:MONTSERRAT}},
+          formatter:v=>v+'%'}}
       }},
-      {{
-        label: 'Dropped', data: {json.dumps(trend_dropped)},
-        backgroundColor: '#D97706', borderRadius: 4, borderSkipped: false, stack: 'bd',
-        datalabels: {{
-          anchor: 'center', align: 'center', color: '#fff',
-          font: {{ size: 10, weight: '600', family: MONTSERRAT }},
-          formatter: v => v > 0 ? v : ''
-        }}
+      scales:{{
+        x:{{display:false}},
+        y:{{grid:{{display:false}},ticks:{{color:'#334155',font:{{size:10,family:RALEWAY}}}}}}
       }}
-    ]
-  }},
-  options: {{
-    responsive: true, maintainAspectRatio: false,
-    layout: {{ padding: {{ top: 10 }} }},
-    plugins: {{
-      legend: {{ position: 'top', align: 'end',
-        labels: {{ color: '#334155', font: {{ size: 11, family: RALEWAY }}, boxWidth: 12, usePointStyle: true }} }},
-      tooltip: {{
-        bodyFont: {{ family: MONTSERRAT, size: 12 }},
-        titleFont: {{ family: RALEWAY, size: 12 }}
-      }}
+    }}
+  }});
+
+  // 5. TA donut
+  chartTADonut = getOrCreate('taDonutChart', {{
+    type:'doughnut',
+    data:{{
+      labels:taLabels,
+      datasets:[{{
+        data:taDel,
+        backgroundColor:taDonutColors.slice(0,taLabels.length),
+        borderColor:'#fff', borderWidth:2
+      }}]
     }},
-    scales: {{
-      x: {{ stacked: true, grid: {{ display: false }}, ticks: {{ color: '#64748B', font: {{ size: 11, family: RALEWAY }} }} }},
-      y: {{ stacked: true, grid: {{ color: 'rgba(0,0,0,0.05)' }},
-        ticks: {{ color: '#64748B', font: {{ size: 10, family: MONTSERRAT }} }} }}
-    }}
-  }}
-}});
-
-// ── 3. Delivery health donut ─────────────────────────────────────────
-new Chart(document.getElementById('healthDonut'), {{
-  type: 'doughnut',
-  data: {{
-    labels: {json.dumps(health_labels)},
-    datasets: [{{
-      data: {json.dumps(health_data)},
-      backgroundColor: ['#00857B', '#E53E3E', '#D97706'],
-      borderColor: '#fff', borderWidth: 2
-    }}]
-  }},
-  options: {{
-    responsive: true, maintainAspectRatio: false, cutout: '62%',
-    plugins: {{
-      legend: {{ position: 'bottom',
-        labels: {{ color: '#334155', font: {{ size: 11, family: RALEWAY }}, boxWidth: 10, padding: 10 }} }},
-      datalabels: {{
-        color: '#fff', font: {{ size: 11, weight: '700', family: MONTSERRAT }},
-        formatter: (v, ctx) => {{
-          const total = ctx.chart.data.datasets[0].data.reduce((a,b) => a+b, 0);
-          const p = total ? (v/total*100) : 0;
-          return p >= 5 ? p.toFixed(1)+'%' : '';
+    options:{{
+      responsive:true, maintainAspectRatio:false, cutout:'58%',
+      plugins:{{
+        legend:{{position:'bottom',
+          labels:{{color:'#334155',font:{{size:10,family:RALEWAY}},boxWidth:10,padding:8}}}},
+        datalabels:{{
+          color:'#fff', font:{{size:10,weight:'600',family:MONTSERRAT}},
+          formatter:(v,ctx)=>{{
+            const tot=ctx.chart.data.datasets[0].data.reduce((a,b)=>a+b,0);
+            const p=tot?(v/tot*100):0;
+            return p>=5?p.toFixed(0)+'%':'';
+          }}
         }}
       }}
     }}
-  }}
-}});
+  }});
 
-// ── 4. Campaign ranking horizontal bar ───────────────────────────────
-new Chart(document.getElementById('campChart'), {{
-  type: 'bar',
-  data: {{
-    labels: {json.dumps(camp_labels)},
-    datasets: [{{
-      data: {json.dumps(camp_or)},
-      backgroundColor: {json.dumps(camp_colors)},
-      borderRadius: 5, borderSkipped: false
-    }}]
-  }},
-  options: {{
-    indexAxis: 'y',
-    responsive: true, maintainAspectRatio: false,
-    layout: {{ padding: {{ right: 40 }} }},
-    plugins: {{
-      legend: {{ display: false }},
-      datalabels: {{
-        anchor: 'end', align: 'end',
-        color: '#0A2540', font: {{ size: 10, weight: '600', family: MONTSERRAT }},
-        formatter: v => v + '%'
-      }}
+  // 6. TA radar
+  chartTARadar = getOrCreate('taRadarChart', {{
+    type:'radar',
+    data:{{
+      labels:taLabels,
+      datasets:[
+        {{
+          label:'OR %', data:taOR,
+          borderColor:'#00857B', backgroundColor:'rgba(0,133,123,0.15)',
+          pointBackgroundColor:'#00857B', borderWidth:2,
+          datalabels:{{display:false}}
+        }},
+        {{
+          label:'CTR %', data:taCTR,
+          borderColor:'#1A6FAF', backgroundColor:'rgba(26,111,175,0.12)',
+          pointBackgroundColor:'#1A6FAF', borderWidth:2,
+          datalabels:{{display:false}}
+        }}
+      ]
     }},
-    scales: {{
-      x: {{ display: false }},
-      y: {{ grid: {{ display: false }}, ticks: {{ color: '#334155', font: {{ size: 10, family: RALEWAY }} }} }}
-    }}
-  }}
-}});
-
-// ── 5. TA delivered donut ─────────────────────────────────────────────
-new Chart(document.getElementById('taDonutChart'), {{
-  type: 'doughnut',
-  data: {{
-    labels: {json.dumps(ta_labels)},
-    datasets: [{{
-      data: {json.dumps(ta_delivered)},
-      backgroundColor: {json.dumps(ta_donut_colors[:len(ta_labels)])},
-      borderColor: '#fff', borderWidth: 2
-    }}]
-  }},
-  options: {{
-    responsive: true, maintainAspectRatio: false, cutout: '58%',
-    plugins: {{
-      legend: {{ position: 'bottom',
-        labels: {{ color: '#334155', font: {{ size: 10, family: RALEWAY }}, boxWidth: 10, padding: 8 }} }},
-      datalabels: {{
-        color: '#fff', font: {{ size: 10, weight: '600', family: MONTSERRAT }},
-        formatter: (v, ctx) => {{
-          const total = ctx.chart.data.datasets[0].data.reduce((a,b) => a+b, 0);
-          const p = total ? (v/total*100) : 0;
-          return p >= 5 ? p.toFixed(0)+'%' : '';
-        }}
-      }}
-    }}
-  }}
-}});
-
-// ── 6. TA OR vs CTR radar ─────────────────────────────────────────────
-new Chart(document.getElementById('taRadarChart'), {{
-  type: 'radar',
-  data: {{
-    labels: {json.dumps(ta_labels)},
-    datasets: [
-      {{
-        label: 'OR %', data: {json.dumps(ta_or)},
-        borderColor: '#00857B', backgroundColor: 'rgba(0,133,123,0.15)',
-        pointBackgroundColor: '#00857B', borderWidth: 2,
-        datalabels: {{ display: false }}
+    options:{{
+      responsive:true, maintainAspectRatio:false,
+      plugins:{{
+        legend:{{position:'top',align:'end',
+          labels:{{color:'#334155',font:{{size:11,family:RALEWAY}},boxWidth:10,usePointStyle:true}}}},
+        datalabels:{{display:false}}
       }},
-      {{
-        label: 'CTR %', data: {json.dumps(ta_ctr)},
-        borderColor: '#1A6FAF', backgroundColor: 'rgba(26,111,175,0.12)',
-        pointBackgroundColor: '#1A6FAF', borderWidth: 2,
-        datalabels: {{ display: false }}
-      }}
-    ]
-  }},
-  options: {{
-    responsive: true, maintainAspectRatio: false,
-    plugins: {{
-      legend: {{ position: 'top', align: 'end',
-        labels: {{ color: '#334155', font: {{ size: 11, family: RALEWAY }}, boxWidth: 10, usePointStyle: true }} }},
-      datalabels: {{ display: false }}
+      scales:{{r:{{
+        angleLines:{{color:'#E2E8F0'}}, grid:{{color:'#E2E8F0'}},
+        pointLabels:{{color:'#334155',font:{{size:10,family:RALEWAY}}}},
+        ticks:{{display:false,backdropColor:'transparent'}},
+        suggestedMin:0
+      }}}}
+    }}
+  }});
+
+  // 7. Market delivered bar
+  chartMkt = getOrCreate('mktChart', {{
+    type:'bar',
+    data:{{
+      labels:mktLabels,
+      datasets:[{{
+        label:'Delivered', data:mktDel,
+        backgroundColor:mktBarColors.slice(0,mktLabels.length),
+        borderRadius:5, borderSkipped:false,
+        datalabels:{{anchor:'end',align:'top',
+          color:'#0A2540',font:{{size:9,weight:'600',family:MONTSERRAT}},
+          formatter:v=>v>=1000?(v/1000).toFixed(1)+'K':v}}
+      }}]
     }},
-    scales: {{
-      r: {{
-        angleLines: {{ color: '#E2E8F0' }},
-        grid: {{ color: '#E2E8F0' }},
-        pointLabels: {{ color: '#334155', font: {{ size: 10, family: RALEWAY }} }},
-        ticks: {{ display: false, backdropColor: 'transparent' }},
-        suggestedMin: 0
+    options:{{
+      responsive:true, maintainAspectRatio:false,
+      layout:{{padding:{{top:20}}}},
+      plugins:{{legend:{{display:false}}}},
+      scales:{{
+        x:{{grid:{{display:false}},ticks:{{color:'#334155',font:{{size:10,family:RALEWAY}},maxRotation:30,minRotation:20}}}},
+        y:{{grid:{{color:'rgba(0,0,0,0.05)'}},
+          ticks:{{color:'#64748B',font:{{size:10,family:MONTSERRAT}},callback:v=>v>=1000?(v/1000).toFixed(0)+'K':v}}}}
       }}
     }}
-  }}
-}});
+  }});
 
-// ── 7. Market delivered bar ───────────────────────────────────────────
-new Chart(document.getElementById('mktChart'), {{
-  type: 'bar',
-  data: {{
-    labels: {json.dumps(mkt_labels)},
-    datasets: [{{
-      label: 'Delivered',
-      data: {json.dumps(mkt_delivered)},
-      backgroundColor: {json.dumps(mkt_bar_colors[:len(mkt_labels)])},
-      borderRadius: 5, borderSkipped: false,
-      datalabels: {{
-        anchor: 'end', align: 'top',
-        color: '#0A2540', font: {{ size: 9, weight: '600', family: MONTSERRAT }},
-        formatter: v => v >= 1000 ? (v/1000).toFixed(1)+'K' : v
+  // 8. Market OR bar
+  chartMktOR = getOrCreate('mktOrChart', {{
+    type:'bar',
+    data:{{
+      labels:mktLabels,
+      datasets:[{{
+        data:mktOR,
+        backgroundColor:'#00857B80', borderColor:'#00857B',
+        borderWidth:1.5, borderRadius:5, borderSkipped:false,
+        datalabels:{{anchor:'end',align:'end',
+          color:'#00857B',font:{{size:9,weight:'600',family:MONTSERRAT}},
+          formatter:v=>v+'%'}}
+      }}]
+    }},
+    options:{{
+      indexAxis:'y', responsive:true, maintainAspectRatio:false,
+      layout:{{padding:{{right:36}}}},
+      plugins:{{legend:{{display:false}}}},
+      scales:{{
+        x:{{display:false}},
+        y:{{grid:{{display:false}},ticks:{{color:'#334155',font:{{size:10,family:RALEWAY}}}}}}
       }}
-    }}]
-  }},
-  options: {{
-    responsive: true, maintainAspectRatio: false,
-    layout: {{ padding: {{ top: 20 }} }},
-    plugins: {{ legend: {{ display: false }} }},
-    scales: {{
-      x: {{ grid: {{ display: false }},
-        ticks: {{ color: '#334155', font: {{ size: 10, family: RALEWAY }}, maxRotation: 30, minRotation: 20 }} }},
-      y: {{ grid: {{ color: 'rgba(0,0,0,0.05)' }},
-        ticks: {{ color: '#64748B', font: {{ size: 10, family: MONTSERRAT }},
-          callback: v => v >= 1000 ? (v/1000).toFixed(0)+'K' : v }} }}
     }}
-  }}
-}});
+  }});
+}}
 
-// ── 8. Market OR% horizontal bar ─────────────────────────────────────
-new Chart(document.getElementById('mktOrChart'), {{
-  type: 'bar',
-  data: {{
-    labels: {json.dumps(mkt_labels)},
-    datasets: [{{
-      data: {json.dumps(mkt_or)},
-      backgroundColor: '#00857B80',
-      borderColor: '#00857B',
-      borderWidth: 1.5,
-      borderRadius: 5, borderSkipped: false,
-      datalabels: {{
-        anchor: 'end', align: 'end',
-        color: '#00857B', font: {{ size: 9, weight: '600', family: MONTSERRAT }},
-        formatter: v => v + '%'
-      }}
-    }}]
-  }},
-  options: {{
-    indexAxis: 'y',
-    responsive: true, maintainAspectRatio: false,
-    layout: {{ padding: {{ right: 36 }} }},
-    plugins: {{ legend: {{ display: false }} }},
-    scales: {{
-      x: {{ display: false }},
-      y: {{ grid: {{ display: false }},
-        ticks: {{ color: '#334155', font: {{ size: 10, family: RALEWAY }} }} }}
-    }}
-  }}
-}});
+// ── Boot ─────────────────────────────────────────────────────────────────
+applyFilters();
 </script>
 </body>
 </html>"""
-
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(html)
     print(f"Dashboard saved: {output_path}")
