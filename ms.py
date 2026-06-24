@@ -297,14 +297,7 @@ if st.session_state.dashboard_html:
             type="primary"
         )
 
-    # Render dashboard inline inside a tall iframe
-    import base64
-    encoded = base64.b64encode(html.encode()).decode()
-    st.markdown(f"""
-    <iframe
-      src="data:text/html;base64,{encoded}"
-      width="100%"
-      height="950"
-      style="border:none; border-radius:12px; box-shadow: 0 4px 24px rgba(10,37,64,0.12);"
-    ></iframe>
-    """, unsafe_allow_html=True)
+    # Render dashboard inline using Streamlit components
+    import streamlit.components.v1 as components
+    components.html(html, height=950, scrolling=True)
+
