@@ -151,6 +151,13 @@ PLATFORMS = {
         "cols": "Month · Sessions · Active users · New users · Engagement Time · TA",
         "color": "#7C5CBF"
     },
+    "CLM": {
+        "icon": "🖥️",
+        "module": "clm_dashboard",
+        "desc": "CLM slide analytics — Total Use, Utilization & Avg Duration",
+        "cols": "Binder Name · Slide Name · Total Use (CLM) · Slide Utilization · Avg. CLM Slide Duration",
+        "color": "#00857B"
+    },
 }
 
 # ── Load dashboard module ────────────────────────────────────────────────
@@ -173,6 +180,9 @@ def generate_dashboard(platform_key: str, excel_path: str) -> str:
         d25 = mod.load_2025(xl)
         d26 = mod.load_2026(xl)
         mod.build_dashboard(d25, d26, out_path)
+    elif platform_key == "CLM":
+        df, kpi_total_use, kpi_util, kpi_avg_dur = mod.load_and_clean(excel_path)
+        mod.build_dashboard(df, kpi_total_use, kpi_util, kpi_avg_dur, out_path)
     else:
         df = mod.load_and_clean(excel_path)
         mod.build_dashboard(df, out_path)
@@ -212,7 +222,7 @@ st.markdown("""
 # ── Step 1: Platform selection ───────────────────────────────────────────
 st.markdown('<div class="step-label">Step 1 — Select Platform</div>', unsafe_allow_html=True)
 
-cols = st.columns(4)
+cols = st.columns(5)
 for i, (name, cfg) in enumerate(PLATFORMS.items()):
     with cols[i]:
         is_sel = st.session_state.selected == name
