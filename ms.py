@@ -160,6 +160,14 @@ PLATFORMS = {
     },
 }
 
+# ── Backend Excel files (committed to repo, no upload needed) ───────────
+EXCEL_FILES = {
+    "SFMC":      "SFMC-data.xlsx",
+    "REE":       "REE-data.xlsx",
+    "SoMe":      "SoMe(Cons4).xlsx",
+    "GCC Pulse": "GCC-pulse data.xlsx",
+}
+
 # ── Load dashboard module ────────────────────────────────────────────────
 @st.cache_resource
 def load_module(module_name):
@@ -251,41 +259,52 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# ── Step 2: Upload ───────────────────────────────────────────────────────
-st.markdown('<div class="step-label">Step 2 — Upload Excel File</div>', unsafe_allow_html=True)
-
-uploaded = st.file_uploader(
-    f"Drop your {sel} Excel file here",
-    type=["xlsx", "xls"],
-    label_visibility="collapsed"
-)
-
-# ── Step 3: Generate ─────────────────────────────────────────────────────
-if uploaded:
-    st.markdown(f"""
-    <div class="success-box">
-      ✓ &nbsp; <span style="color:#0A2540;font-weight:400">{uploaded.name}</span>&nbsp; ready to process
-    </div>
-    """, unsafe_allow_html=True)
-
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown('<div class="step-label">Step 3 — Generate Dashboard</div>', unsafe_allow_html=True)
-
-    if st.button(f"▶  Generate {sel} Dashboard", type="primary", use_container_width=True):
-        with st.spinner(f"Processing {uploaded.name}…"):
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
-            tmp.write(uploaded.read())
-            tmp.close()
-            try:
-                html = generate_dashboard(sel, tmp.name)
-                st.session_state.dashboard_html = html
-                st.session_state.dashboard_platform = sel
-            except Exception as e:
-                st.error(f"⚠ Error processing file: {e}")
-            finally:
-                try: os.unlink(tmp.name)
-                except: pass
-        st.rerun()
+# ── Step 2: Upload (CLM only) or Generate (rest) ─────────────────────────
+if sel == "CLM":
+    st.markdown('<div class="step-label">Step 2 — Upload Excel File</div>', unsafe_allow_html=True)
+    uploaded = st.file_uploader(
+        "Drop your CLM Excel file here",
+        type=["xlsx", "xls"],
+        label_visibility="collapsed"
+    )
+    if uploaded:
+        st.markdown(f"""
+        <div class="success-box">
+          ✓ &nbsp; <span style="color:#0A2540;font-weight:400">{uploaded.name}</span>&nbsp; ready to process
+        </div>
+        """, unsafe_allow_html=True)
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown('<div class="step-label">Step 3 — Generate Dashboard</div>', unsafe_allow_html=True)
+        if st.button(f"▶  Generate CLM Dashboard", type="primary", use_container_width=True):
+            with st.spinner(f"Processing {uploaded.name}…"):
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
+                tmp.write(uploaded.read())
+                tmp.close()
+                try:
+                    html = generate_dashboard(sel, tmp.name)
+                    st.session_state.dashboard_html = html
+                    st.session_state.dashboard_platform = sel
+                except Exception as e:
+                    st.error(f"⚠ Error processing file: {e}")
+                finally:
+                    try: os.unlink(tmp.name)
+                    except: pass
+            st.rerun()
+else:
+    st.markdown('<div class="step-label">Step 2 — Generate Dashboard</div>', unsafe_allow_html=True)
+    excel_path = Path(__file__).parent / EXCEL_FILES[sel]
+    if not excel_path.exists():
+        st.error(f"⚠ Data file not found: {EXCEL_FILES[sel]}")
+    else:
+        if st.button(f"▶  Generate {sel} Dashboard", type="primary", use_container_width=True):
+            with st.spinner(f"Processing {sel} data…"):
+                try:
+                    html = generate_dashboard(sel, str(excel_path))
+                    st.session_state.dashboard_html = html
+                    st.session_state.dashboard_platform = sel
+                except Exception as e:
+                    st.error(f"⚠ Error processing file: {e}")
+            st.rerun()
 
 # ── Dashboard output ─────────────────────────────────────────────────────
 if st.session_state.dashboard_html:
