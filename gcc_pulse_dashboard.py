@@ -12,26 +12,40 @@ COL_NEW_USERS   = "New users"
 COL_ENG_TIME    = "Engagement Time"
 COL_TA          = "TA"
 COL_LANDING     = "Landing page"
-
-ONCO_VARIANTS   = ["onco", "oncology", "onco ", "oncology "]
+COL_PLATFORM    = "Platform"
 
 MONTH_ORDER = ["January","February","March","April","May","June",
                "July","August","September","October","November","December"]
+
+PLATFORMS = ["LinkedIn", "Instagram", "Facebook"]
 # ────────────────────────────────────────────────────────────────────────
 
 def load_and_clean(path):
     df = pd.read_excel(path)
     df.columns = df.columns.str.strip()
 
-    if COL_TA in df.columns:
-        df[COL_TA] = df[COL_TA].astype(str).str.strip()
-        df[COL_TA] = df[COL_TA].apply(
-            lambda x: "Oncology" if x.lower().strip() in ONCO_VARIANTS else x
-        )
+    def normalize_ta(val):
+        v = str(val).strip().lower()
+        if v.startswith("dia"):   return "Diabetes"
+        if v.startswith("hac"):   return "HAC"
+        if v.startswith("onc"):   return "Oncology"
+        if v.startswith("vacc"):  return "Vaccines"
+        return str(val).strip()
 
     if COL_TA in df.columns:
-        df = df[df[COL_TA].notna()]
-        df = df[df[COL_TA].str.lower() != 'nan']
+        df[COL_TA] = df[COL_TA].astype(str).str.strip()
+        df[COL_TA] = df[COL_TA].apply(normalize_ta)
+        # Replace 'nan' string with empty string — keep these rows
+        df[COL_TA] = df[COL_TA].apply(lambda x: '' if x.lower() == 'nan' else x)
+
+    # Normalize Platform column
+    if COL_PLATFORM in df.columns:
+        df[COL_PLATFORM] = df[COL_PLATFORM].astype(str).str.strip()
+        df[COL_PLATFORM] = df[COL_PLATFORM].apply(
+            lambda x: next((p for p in PLATFORMS if p.lower() in x.lower()), x) if x and x.lower() != 'nan' else 'Unknown'
+        )
+    else:
+        df[COL_PLATFORM] = 'Unknown'
 
     for col in [COL_SESSIONS, COL_ACTIVE, COL_NEW_USERS, COL_ENG_TIME]:
         if col in df.columns:
@@ -64,6 +78,7 @@ def build_dashboard(df, output_path):
         raw_records.append({
             "month":   row.get(COL_MONTH, ""),
             "ta":      row.get(COL_TA, ""),
+            "platform": row.get(COL_PLATFORM, "Unknown"),
             "active":  float(row.get(COL_ACTIVE, 0)),
             "new":     float(row.get(COL_NEW_USERS, 0)),
             "sessions":float(row.get(COL_SESSIONS, 0)),
@@ -72,11 +87,14 @@ def build_dashboard(df, output_path):
         })
 
     all_months = [m for m in MONTH_ORDER if m in df[COL_MONTH].unique()]
-    all_tas    = sorted(df[COL_TA].dropna().unique().tolist())
+    KNOWN_TAS  = ["Diabetes", "HAC", "Oncology", "Vaccines"]
+    all_tas    = [ta for ta in KNOWN_TAS if ta in df[COL_TA].values]
+    all_platforms = sorted([p for p in df[COL_PLATFORM].unique() if p and p != 'nan'])
 
-    raw_json    = json.dumps(raw_records)
-    months_json = json.dumps(all_months)
-    tas_json    = json.dumps(all_tas)
+    raw_json       = json.dumps(raw_records)
+    months_json    = json.dumps(all_months)
+    tas_json       = json.dumps(all_tas)
+    platforms_json = json.dumps(all_platforms)
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -144,6 +162,28 @@ def build_dashboard(df, output_path):
     color: #64748B;
     text-transform: uppercase;
     letter-spacing: 0.05em;
+  }}
+  .dropdown-select {{
+    font-family: 'Raleway', sans-serif;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 8px 12px;
+    border-radius: 6px;
+    border: 1.5px solid #CBD5E1;
+    background: #fff;
+    color: #475569;
+    cursor: pointer;
+    transition: all 0.15s;
+    min-width: 160px;
+  }}
+  .dropdown-select:hover {{
+    border-color: #00857B;
+    background: #F0FDF9;
+  }}
+  .dropdown-select:focus {{
+    outline: none;
+    border-color: #00857B;
+    box-shadow: 0 0 0 3px rgba(0,133,123,0.1);
   }}
   .pill-row {{
     display: flex;
@@ -298,11 +338,15 @@ def build_dashboard(df, output_path):
     <div class="filter-bar">
       <div class="filter-group">
         <div class="filter-label">Month</div>
-        <div class="pill-row" id="monthPills"></div>
+        <select id="monthDropdown" class="dropdown-select" onchange="handleFilterChange()">
+          <option value="">All Months</option>
+        </select>
       </div>
       <div class="filter-group">
         <div class="filter-label">Therapy Area (TA)</div>
-        <div class="pill-row" id="taPills"></div>
+        <select id="taDropdown" class="dropdown-select" onchange="handleFilterChange()">
+          <option value="">All TAs</option>
+        </select>
       </div>
       <div class="filter-reset-wrap">
         <button class="reset-btn" id="resetBtn" onclick="resetFilters()">
@@ -313,31 +357,26 @@ def build_dashboard(df, output_path):
     </div>
 
     <!-- KPI CARDS -->
-    <div class="metric-grid">
+    <div class="metric-grid" style="grid-template-columns: repeat(4, 1fr);">
       <div class="metric-card c1">
         <div class="metric-icon">👥</div>
         <div class="metric-label">Active Users</div>
         <div class="metric-value" id="kpi-active">—</div>
+      </div>
+      <div class="metric-card c5">
+        <div class="metric-icon">🖥️</div>
+        <div class="metric-label">Sessions</div>
+        <div class="metric-value" id="kpi-sessions">—</div>
       </div>
       <div class="metric-card c2">
         <div class="metric-icon">🆕</div>
         <div class="metric-label">New Users</div>
         <div class="metric-value" id="kpi-new">—</div>
       </div>
-      <div class="metric-card c3">
-        <div class="metric-icon">📈</div>
-        <div class="metric-label">New User %</div>
-        <div class="metric-value" id="kpi-pct">—</div>
-      </div>
       <div class="metric-card c4">
         <div class="metric-icon">⏱️</div>
         <div class="metric-label">Avg Engagement Time</div>
         <div class="metric-value" id="kpi-eng">—</div>
-      </div>
-      <div class="metric-card c5">
-        <div class="metric-icon">🖥️</div>
-        <div class="metric-label">Sessions</div>
-        <div class="metric-value" id="kpi-sessions">—</div>
       </div>
     </div>
 
@@ -407,10 +446,11 @@ const MONTH_ORDER = {json.dumps(MONTH_ORDER)};
 const RAW = {raw_json};
 const ALL_MONTHS = {months_json};
 const ALL_TAS    = {tas_json};
+const ALL_PLATFORMS = {platforms_json};
 
 // ── Filter state ──────────────────────────────────────────────────────
-let selMonths = new Set();
-let selTAs    = new Set();
+let selMonth = '';
+let selTA    = '';
 
 // ── Chart instances ───────────────────────────────────────────────────
 let charts = {{}};
@@ -423,8 +463,8 @@ function fmtNum(n) {{
 
 function filteredData() {{
   return RAW.filter(r => {{
-    const mOk = selMonths.size === 0 || selMonths.has(r.month);
-    const tOk = selTAs.size    === 0 || selTAs.has(r.ta);
+    const mOk = !selMonth || r.month === selMonth;
+    const tOk = !selTA    || r.ta    === selTA;
     return mOk && tOk;
   }});
 }}
@@ -515,13 +555,11 @@ function updateDashboard() {{
   const totalNew      = df.reduce((s,r) => s + r.new, 0);
   const totalSessions = df.reduce((s,r) => s + r.sessions, 0);
   const avgEng        = df.length ? df.reduce((s,r) => s + r.eng, 0) / df.length : 0;
-  const newPct        = totalActive ? (totalNew / totalActive * 100).toFixed(1) : '0.0';
 
   document.getElementById('kpi-active').textContent   = fmtNum(totalActive);
-  document.getElementById('kpi-new').textContent      = fmtNum(totalNew);
-  document.getElementById('kpi-pct').textContent      = newPct + '%';
-  document.getElementById('kpi-eng').textContent      = avgEng.toFixed(1);
   document.getElementById('kpi-sessions').textContent = fmtNum(totalSessions);
+  document.getElementById('kpi-new').textContent      = fmtNum(totalNew);
+  document.getElementById('kpi-eng').textContent      = avgEng.toFixed(1);
 
   // Monthly trend — Active Users
   const trendMap = {{}};
@@ -561,11 +599,14 @@ function updateDashboard() {{
     taEng.map(r => r.label), taEng.map(r => parseFloat(r.value.toFixed(1))),
     Array(taEng.length).fill('#00857B'), true);
 
-  // Top pages
+  // Top pages — only rows with a known TA, exclude /reference* and /therapeutic* pages
   const pageUserMap = {{}};
   const pageSessMap = {{}};
   df.forEach(r => {{
+    if (!r.ta || r.ta === '') return;
     if (!r.landing || r.landing === 'nan' || r.landing === '') return;
+    const lc = r.landing.toLowerCase().replace(/^\//, '');
+    if (lc.startsWith('reference') || lc.startsWith('therapeutic')) return;
     pageUserMap[r.landing] = (pageUserMap[r.landing] || 0) + r.active;
     pageSessMap[r.landing] = (pageSessMap[r.landing] || 0) + r.sessions;
   }});
@@ -576,55 +617,55 @@ function updateDashboard() {{
   renderTable('topUsersBody', topUsers, '#00857B');
   renderTable('topSessionsBody', topSess, '#1A6FAF');
 
-  // Header pill
-  const mLabel = selMonths.size === 0 ? 'All Months' :
-    [...selMonths].sort((a,b) => MONTH_ORDER.indexOf(a) - MONTH_ORDER.indexOf(b)).join(', ');
-  document.getElementById('headerPill').textContent = '📅 ' + mLabel + ' · 2025';
+  // Header pill — only show if a filter is active
+  if (selMonth || selTA) {{
+    let pillText = '📅 ';
+    if (selMonth) pillText += selMonth;
+    if (selMonth && selTA) pillText += ' · ';
+    if (selTA) pillText += selTA;
+    document.getElementById('headerPill').style.display = 'block';
+    document.getElementById('headerPill').textContent = pillText;
+  }} else {{
+    document.getElementById('headerPill').style.display = 'none';
+  }}
 
   // Filter active badge
-  const isFiltered = selMonths.size > 0 || selTAs.size > 0;
+  const isFiltered = selMonth || selTA;
   document.getElementById('filterBadge').style.display = isFiltered ? 'inline-block' : 'none';
+}}
+
+// ── Handlers ──────────────────────────────────────────────────────────
+function handleFilterChange() {{
+  selMonth = document.getElementById('monthDropdown').value;
+  selTA    = document.getElementById('taDropdown').value;
+  updateDashboard();
 }}
 
 // ── Pill builders ─────────────────────────────────────────────────────
 function buildPills() {{
-  const mp = document.getElementById('monthPills');
+  const mp = document.getElementById('monthDropdown');
   ALL_MONTHS.forEach(m => {{
-    const el = document.createElement('span');
-    el.className = 'pill';
-    el.textContent = m.slice(0,3);  // "Jan", "Feb" ...
-    el.title = m;
-    el.dataset.val = m;
-    el.onclick = () => togglePill(el, selMonths, m, 'month');
-    mp.appendChild(el);
+    const opt = document.createElement('option');
+    opt.value = m;
+    opt.textContent = m;
+    mp.appendChild(opt);
   }});
 
-  const tp = document.getElementById('taPills');
+  const tp = document.getElementById('taDropdown');
   ALL_TAS.forEach(ta => {{
-    const el = document.createElement('span');
-    el.className = 'pill';
-    el.textContent = ta;
-    el.dataset.val = ta;
-    el.onclick = () => togglePill(el, selTAs, ta, 'ta');
-    tp.appendChild(el);
+    const opt = document.createElement('option');
+    opt.value = ta;
+    opt.textContent = ta;
+    tp.appendChild(opt);
   }});
 }}
 
-function togglePill(el, set, val, group) {{
-  if (set.has(val)) {{
-    set.delete(val);
-    el.classList.remove('active');
-  }} else {{
-    set.add(val);
-    el.classList.add('active');
-  }}
-  updateDashboard();
-}}
 
 function resetFilters() {{
-  selMonths.clear();
-  selTAs.clear();
-  document.querySelectorAll('.pill').forEach(p => p.classList.remove('active'));
+  selMonth = '';
+  selTA    = '';
+  document.getElementById('monthDropdown').value = '';
+  document.getElementById('taDropdown').value    = '';
   updateDashboard();
 }}
 
