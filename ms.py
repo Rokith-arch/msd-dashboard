@@ -160,15 +160,12 @@ PLATFORMS = {
     },
 }
 
-# Consolidated Excel - single source of truth (same folder as ms2.py)
-CONSOLIDATED_FILE = "consolidated.xlsx"
-
-# Sheet indices (0-based) within consolidated.xlsx
-MASTER_SHEET_MAP = {
-    "SFMC":      [0],        # Sheet 1
-    "REE":       [1],        # Sheet 2
-    "SoMe":      [2, 3],     # Sheet 3 (2025) + Sheet 4 (2026)
-    "GCC Pulse": [4],        # Sheet 5
+# ── Backend Excel files (committed to repo, no upload needed) ───────────
+EXCEL_FILES = {
+    "SFMC":      "SFMC-data.xlsx",
+    "REE":       "REE-data.xlsx",
+    "SoMe":      "SoMe(Cons4).xlsx",
+    "GCC Pulse": "GCC-pulse data.xlsx",
 }
 
 # ── Load dashboard module ────────────────────────────────────────────────
@@ -180,60 +177,28 @@ def load_module(module_name):
     spec.loader.exec_module(mod)
     return mod
 
-def extract_sheets_to_tmp(master_path: str, sheet_indices: list) -> str:
-    """Extract specific sheet(s) from master Excel into a new temp xlsx.
-    For single-sheet platforms: sheet written as Sheet 1 (index 0).
-    For SoMe: two sheets written preserving their names.
-    Returns path to the temp file."""
-    import pandas as pd
-    xl = pd.ExcelFile(master_path)
-    all_sheet_names = xl.sheet_names
-
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
-    tmp.close()
-
-    with pd.ExcelWriter(tmp.name, engine="openpyxl") as writer:
-        for idx in sheet_indices:
-            sheet_name = all_sheet_names[idx]
-            df = pd.read_excel(master_path, sheet_name=sheet_name, header=None)
-            df.to_excel(writer, sheet_name=sheet_name, index=False, header=False)
-
-    return tmp.name
-
-def generate_dashboard(platform_key: str, clm_path: str = None) -> str:
-    """CLM needs clm_path; all others read straight from consolidated.xlsx."""
-    import pandas as pd
+def generate_dashboard(platform_key: str, excel_path: str) -> str:
     mod_name = PLATFORMS[platform_key]["module"]
     mod = load_module(mod_name)
-    consolidated = Path(__file__).parent / CONSOLIDATED_FILE
-    tmp_path = None
-    try:
-        if platform_key == "CLM":
-            out_path = clm_path.replace(".xlsx", "_dashboard.html").replace(".xls", "_dashboard.html")
-            df, kpi_total_use, kpi_util, kpi_avg_dur = mod.load_and_clean(clm_path)
-            mod.build_dashboard(df, kpi_total_use, kpi_util, kpi_avg_dur, out_path)
-        elif platform_key == "SoMe":
-            tmp_path = extract_sheets_to_tmp(str(consolidated), MASTER_SHEET_MAP["SoMe"])
-            out_path = tmp_path.replace(".xlsx", "_dashboard.html")
-            xl = pd.ExcelFile(tmp_path)
-            d25 = mod.load_2025(xl)
-            d26 = mod.load_2026(xl)
-            mod.build_dashboard(d25, d26, out_path)
-        else:
-            tmp_path = extract_sheets_to_tmp(str(consolidated), MASTER_SHEET_MAP[platform_key])
-            out_path = tmp_path.replace(".xlsx", "_dashboard.html")
-            df = mod.load_and_clean(tmp_path)
-            mod.build_dashboard(df, out_path)
+    out_path = excel_path.replace(".xlsx", "_dashboard.html").replace(".xls", "_dashboard.html")
 
-        with open(out_path, "r", encoding="utf-8") as f:
-            html = f.read()
-        os.remove(out_path)
-        return html
+    if platform_key == "SoMe":
+        import pandas as pd
+        xl  = pd.ExcelFile(excel_path)
+        d25 = mod.load_2025(xl)
+        d26 = mod.load_2026(xl)
+        mod.build_dashboard(d25, d26, out_path)
+    elif platform_key == "CLM":
+        df, kpi_total_use, kpi_util, kpi_avg_dur = mod.load_and_clean(excel_path)
+        mod.build_dashboard(df, kpi_total_use, kpi_util, kpi_avg_dur, out_path)
+    else:
+        df = mod.load_and_clean(excel_path)
+        mod.build_dashboard(df, out_path)
 
-    finally:
-        if tmp_path:
-            try: os.unlink(tmp_path)
-            except: pass
+    with open(out_path, "r", encoding="utf-8") as f:
+        html = f.read()
+    os.remove(out_path)
+    return html
 
 # ── Session state ────────────────────────────────────────────────────────
 if "selected" not in st.session_state:
@@ -242,10 +207,20 @@ if "dashboard_html" not in st.session_state:
     st.session_state.dashboard_html = None
 if "dashboard_platform" not in st.session_state:
     st.session_state.dashboard_platform = None
-if "master_tmp_path" not in st.session_state:
-    st.session_state.master_tmp_path = None
 
-
+# ── Header ───────────────────────────────────────────────────────────────
+st.markdown("""
+<div class="msd-header">
+  <div class="msd-header-left">
+    <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAABygAAALBCAYAAAADEfaNAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAAEnQAABJ0Ad5mH3gAAP+lSURBVHhe7N13mF1Vvf/xzz7nTElvkNClgxSFy1XAXrBxL9ilXBBUEBWxoCjgD0WKXlB6UYpAgnQSQnoI6b33OkmmZGYyvZw5c9ree63fH2Ryk00SUqac8n49zzxJ1toJIbPPLuuzvms51dXVVgAAAAAAAAAAAADQDULBBgAAAAAAAAAAAADoKgSUAAAAAAAAAAAAALoNASUAAAAAAAAAAACAbkNACQAAAAAAAAAAAKDbEFACAAAAAAAAAAAA6DYElAAAAAAAAAAAAAC6DQElAAAAAAAAAAAAgG5DQAkAAAAAAAAAAACg2xBQAgAAAAAAAAAAAOg2BJQAAAAAAAAAAAAAug0BJQAAAAAAAAAAAIBuQ0AJAAAAAAAAAAAAoNsQUAIAAAAAAAAAAADoNgSUAAAAAAAAAAAAALoNASUAAAAAAAAAAACAbkNACQAAAAAAAAAAAKDbEFACAAAAAAAAAAAA6DYElAAAAAAAAAAAAAC6DQElAAAAAAAAAAAAgG5DQAkAAAAAAAAAAACg2xBQAgAAAAAAAAAAAOg2BJQAAAAAAAAAAAAAug0BJQAAAAAAAAAAAIBuQ0AJAAAAAAAAAAAAoNsQUAIAAAAAAAAAAADoNgSUAAAAAAAAAAAAALoNASUAAAAAAAAAAACAbkNACQAAAAAAAAAAAKDbEFACAAAAAAAAAAAA6DZOdXW1DTYCAA6dtVZynP/7eTdwHEeSlaP3/rsAAAAAAAAAAGQaAkoA6AIxN612z1VzKiljrVK+LyurlG9kZeVLMsbKM75M8Dfvk1XECSnkOIqE3vuxcMePESekiOOoX2GRDi/uraJwOPibAQAAAAAAAADocQSUAPABPGPkGiPfGhkrGVmVR1u0urleFbE2NaWSqk8lFU2nFPc8JX1PsVS7POPLM0bWSsZayZE6LrjWSlZ2R2Wlo/0uePy/okyFdvzE2aU95IQUdhwVhiPqV9xHvcIR9S8o1JCiYh3Zp4/OGDhYHzv8KPUvLJIjKeyEVBgOK+w4O/88AAAAAAAAAAC6EgElgLxnrZVnjXxrlfZ9VbW3qSTaovpkXNF0WpVtLSpta1HUTSvmukr4nuJu6r3qR2tldwsc30sMu2tJ131xHEeOHDk78k9HznvhZSSiXpFC9Y0UaEBRkY7s1Ucn9B+sI/r01dCiXjp/6FHqU1CgSCiksByFQ2xXDAAAAAAAAADoPASUAPJORyVkYscSrFE3rZUNNZpZW6XNrc3aHmtVyvd2HNcRQOb2pTLkhBRypLDjqF9RL53Qf7DOHjREFx97ko7o0099IxH1LyxSeMfysmGqLQEAAAAAAAAAB4mAEkDOs5LMjrAx7fva2NKkd6rKtKS+Wltbm9SSTinlezkfQh6MsBNS/8JiDevdW6cMGqpT+w/SuUMO1wXDjlZBKLQj2HT2e4VaAAAAAAAAAAAIKAHkNGutKttjWtvSoBlVpZpdU6XKWIt8Y94LJB2HYHI/dCwVqx2h5bH9BupTRxyjTx15nM4cdJiO7zeAkBIAAAAAAAAAsF8IKAHkHGOt0sbXmqYGPbVhpeZUlSrpuzK2Y3lXLnuH6r1lXt9bFrYgHNGpg4bpoqOO0fdOPEODi4tV4ITYuxIAAAAAAAAA" [truncated]
+    <div>
+      <div class="msd-title">MSD Analytics</div>
+      <div class="msd-sub">Dashboard Launcher · GCC Region</div>
+    </div>
+  </div>
+  <div class="msd-badge">MSD Internal</div>
+</div>
+""", unsafe_allow_html=True)
 
 # ── Step 1: Platform selection ───────────────────────────────────────────
 st.markdown('<div class="step-label">Step 1 — Select Platform</div>', unsafe_allow_html=True)
@@ -311,28 +286,67 @@ if sel == "CLM":
                     except: pass
             st.rerun()
 else:
-    st.markdown('<div class="step-label">Step 2 — Generate Dashboard</div>', unsafe_allow_html=True)
+    st.markdown('<div class="step-label">Step 2 — Upload / Use master Excel</div>', unsafe_allow_html=True)
 
-    consolidated = Path(__file__).parent / CONSOLIDATED_FILE
-    if not consolidated.exists():
-        st.error(f"⚠ consolidated.xlsx not found in the app folder. Place it alongside ms2.py and restart.")
+    st.markdown("""
+    **Master Excel format (single file)**
+
+    - Sheet 1: SFMC
+    - Sheet 2: REE
+    - Sheet 3: SoMe 2025
+    - Sheet 4: SoMe 2026
+    - Sheet 5: GCC Pulse
+    """, unsafe_allow_html=True)
+
+    # Allow uploading a single master Excel to be reused across platforms
+    master_uploaded = st.file_uploader(
+        "Upload single master Excel (all platforms)",
+        type=["xlsx", "xls"],
+        label_visibility="visible",
+        help="One file with sheets: 1=SFMC,2=REE,3=SoMe2025,4=SoMe2026,5=GCC Pulse"
+    )
+
+    if master_uploaded:
+        # replace any existing temp file
+        if "master_tmp_path" in st.session_state and st.session_state.master_tmp_path:
+            try:
+                os.unlink(st.session_state.master_tmp_path)
+            except Exception:
+                pass
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
+        tmp.write(master_uploaded.read())
+        tmp.close()
+        st.session_state.master_tmp_path = tmp.name
+        st.success(f"Master file uploaded: {master_uploaded.name}")
+
+    # If a master file exists in session state, prefer it; otherwise fall back to committed files
+    if "master_tmp_path" in st.session_state and st.session_state.master_tmp_path:
+        excel_path = Path(st.session_state.master_tmp_path)
+        using_master = True
     else:
-        st.markdown(f"""
-        <div class="info-box">
-          <b>Reading from consolidated.xlsx</b> — Sheet 1: SFMC &nbsp;·&nbsp; Sheet 2: REE &nbsp;·&nbsp;
-          Sheet 3: SoMe 2025 &nbsp;·&nbsp; Sheet 4: SoMe 2026 &nbsp;·&nbsp; Sheet 5: GCC Pulse
-        </div>
-        """, unsafe_allow_html=True)
-        if st.button(f"▶  Generate {sel} Dashboard", type="primary", use_container_width=True):
-            with st.spinner(f"Reading {sel} from consolidated.xlsx…"):
+        excel_path = Path(__file__).parent / EXCEL_FILES[sel]
+        using_master = False
+
+    if not excel_path.exists():
+        st.error(f"⚠ Data file not found: {EXCEL_FILES[sel]} (and no master Excel uploaded)")
+    else:
+        # Require confirmation when using an uploaded master file to avoid accidental runs
+        confirm_needed = using_master
+        confirm = True
+        if confirm_needed:
+            st.info("Using uploaded master Excel. Please confirm the sheet mapping before generating.")
+            confirm = st.checkbox("I confirm the uploaded master Excel uses the mapping: 1=SFMC,2=REE,3=SoMe2025,4=SoMe2026,5=GCC Pulse", key="confirm_master_mapping")
+
+        btn_disabled = confirm_needed and not confirm
+        if st.button(f"▶  Generate {sel} Dashboard", type="primary", use_container_width=True, disabled=btn_disabled):
+            with st.spinner(f"Processing {sel} data…"):
                 try:
-                    html = generate_dashboard(sel)
+                    html = generate_dashboard(sel, str(excel_path))
                     st.session_state.dashboard_html = html
                     st.session_state.dashboard_platform = sel
                 except Exception as e:
-                    st.error(f"⚠ Error generating dashboard: {e}")
+                    st.error(f"⚠ Error processing file: {e}")
             st.rerun()
-
 
 # ── Dashboard output ─────────────────────────────────────────────────────
 if st.session_state.dashboard_html:
@@ -357,4 +371,3 @@ if st.session_state.dashboard_html:
     # Render dashboard inline using Streamlit components
     import streamlit.components.v1 as components
     components.html(html, height=950, scrolling=True)
-
