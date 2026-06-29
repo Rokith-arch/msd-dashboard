@@ -212,7 +212,12 @@ if "dashboard_platform" not in st.session_state:
 st.markdown("""
 <div class="msd-header">
   <div class="msd-header-left">
-    <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAABygAAALBCAYAAAADEfaNAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAAEnQAABJ0Ad5mH3gAAP+lSURBVHhe7N13mF1Vvf/xzz7nTElvkNClgxSFy1XAXrBxL9ilXBBUEBWxoCjgD0WKXlB6UYpAgnQSQnoI6b33OkmmZGYyvZw5c9ree63fH2Ryk00SUqac8n49zzxJ1toJIbPPLuuzvms51dXVVgAAAAAAAAAAAADQDULBBgAAAAAAAAAAAADoKgSUAAAAAAAAAAAAALoNASUAAAAAAAAAAACAbkNACQAAAAAAAAAAAKDbEFACAAAAAAAAAAAA6DYElAAAAAAAAAAAAAC6DQElAAAAAAAAAAAAgG5DQAkAAAAAAAAAAACg2xBQAgAAAAAAAAAAAOg2BJQAAAAAAAAAAAAAug0BJQAAAAAAAAAAAIBuQ0AJAAAAAAAAAAAAoNsQUAIAAAAAAAAAAADoNgSUAAAAAAAAAAAAALoNASUAAAAAAAAAAACAbkNACQAAAAAAAAAAAKDbEFACAAAAAAAAAAAA6DYElAAAAAAAAAAAAAC6DQElAAAAAAAAAAAAgG5DQAkAAAAAAAAAAACg2xBQAgAAAAAAAAAAAOg2BJQAAAAAAAAAAAAAug0BJQAAAAAAAAAAAIBuQ0AJAAAAAAAAAAAAoNsQUAIAAAAAAAAAAADoNgSUAAAAAAAAAAAAALoNASUAAAAAAAAAAACAbkNACQAAAAAAAAAAAKDbEFACAAAAAAAAAAAA6DZOdXW1DTYCAA6dtVZynP/7eTdwHEeSlaP3/rsAAAAAAAAAAGQaAkoA6AIxN612z1VzKiljrVK+LyurlG9kZeVLMsbKM75M8Dfvk1XECSnkOIqE3vuxcMePESekiOOoX2GRDi/uraJwOPibAQAAAAAAAADocQSUAPABPGPkGiPfGhkrGVmVR1u0urleFbE2NaWSqk8lFU2nFPc8JX1PsVS7POPLM0bWSsZayZE6LrjWSlZ2R2Wlo/0uePy/okyFdvzE2aU95IQUdhwVhiPqV9xHvcIR9S8o1JCiYh3Zp4/OGDhYHzv8KPUvLJIjKeyEVBgOK+w4O/88AAAAAAAAAAC6EgElgLxnrZVnjXxrlfZ9VbW3qSTaovpkXNF0WpVtLSpta1HUTSvmukr4nuJu6r3qR2tldwsc30sMu2tJ131xHEeOHDk78k9HznvhZSSiXpFC9Y0UaEBRkY7s1Ucn9B+sI/r01dCiXjp/6FHqU1CgSCiksByFQ2xXDAAAAAAAAADoPASUAPJORyVkYscSrFE3rZUNNZpZW6XNrc3aHmtVyvd2HNcRQOb2pTLkhBRypLDjqF9RL53Qf7DOHjREFx97ko7o0099IxH1LyxSeMfysmGqLQEAAAAAAAAAB4mAEkDOs5LMjrAx7fva2NKkd6rKtKS+Wltbm9SSTinlezkfQh6MsBNS/8JiDevdW6cMGqpT+w/SuUMO1wXDjlZBKLQj2HT2e4VaAAAAAAAAAAAIKAHkNGutKttjWtvSoBlVpZpdU6XKWIt8Y94LJB2HYHI/dCwVqx2h5bH9BupTRxyjTx15nM4cdJiO7zeAkBIAAAAAAAAAsF8IKAHkHGOt0sbXmqYGPbVhpeZUlSrpuzK2Y3lXLnuH6r1lXt9bFrYgHNGpg4bpoqOO0fdOPEODi4tV4ITYuxIAAAAAAAAA" [truncated]
+    <div class="msd-logo">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+        <rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>
+      </svg>
+    </div>
     <div>
       <div class="msd-title">MSD Analytics</div>
       <div class="msd-sub">Dashboard Launcher · GCC Region</div>
@@ -286,59 +291,12 @@ if sel == "CLM":
                     except: pass
             st.rerun()
 else:
-    st.markdown('<div class="step-label">Step 2 — Upload / Use master Excel</div>', unsafe_allow_html=True)
-
-    st.markdown("""
-    **Master Excel format (single file)**
-
-    - Sheet 1: SFMC
-    - Sheet 2: REE
-    - Sheet 3: SoMe 2025
-    - Sheet 4: SoMe 2026
-    - Sheet 5: GCC Pulse
-    """, unsafe_allow_html=True)
-
-    # Allow uploading a single master Excel to be reused across platforms
-    master_uploaded = st.file_uploader(
-        "Upload single master Excel (all platforms)",
-        type=["xlsx", "xls"],
-        label_visibility="visible",
-        help="One file with sheets: 1=SFMC,2=REE,3=SoMe2025,4=SoMe2026,5=GCC Pulse"
-    )
-
-    if master_uploaded:
-        # replace any existing temp file
-        if "master_tmp_path" in st.session_state and st.session_state.master_tmp_path:
-            try:
-                os.unlink(st.session_state.master_tmp_path)
-            except Exception:
-                pass
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
-        tmp.write(master_uploaded.read())
-        tmp.close()
-        st.session_state.master_tmp_path = tmp.name
-        st.success(f"Master file uploaded: {master_uploaded.name}")
-
-    # If a master file exists in session state, prefer it; otherwise fall back to committed files
-    if "master_tmp_path" in st.session_state and st.session_state.master_tmp_path:
-        excel_path = Path(st.session_state.master_tmp_path)
-        using_master = True
-    else:
-        excel_path = Path(__file__).parent / EXCEL_FILES[sel]
-        using_master = False
-
+    st.markdown('<div class="step-label">Step 2 — Generate Dashboard</div>', unsafe_allow_html=True)
+    excel_path = Path(__file__).parent / EXCEL_FILES[sel]
     if not excel_path.exists():
-        st.error(f"⚠ Data file not found: {EXCEL_FILES[sel]} (and no master Excel uploaded)")
+        st.error(f"⚠ Data file not found: {EXCEL_FILES[sel]}")
     else:
-        # Require confirmation when using an uploaded master file to avoid accidental runs
-        confirm_needed = using_master
-        confirm = True
-        if confirm_needed:
-            st.info("Using uploaded master Excel. Please confirm the sheet mapping before generating.")
-            confirm = st.checkbox("I confirm the uploaded master Excel uses the mapping: 1=SFMC,2=REE,3=SoMe2025,4=SoMe2026,5=GCC Pulse", key="confirm_master_mapping")
-
-        btn_disabled = confirm_needed and not confirm
-        if st.button(f"▶  Generate {sel} Dashboard", type="primary", use_container_width=True, disabled=btn_disabled):
+        if st.button(f"▶  Generate {sel} Dashboard", type="primary", use_container_width=True):
             with st.spinner(f"Processing {sel} data…"):
                 try:
                     html = generate_dashboard(sel, str(excel_path))
@@ -371,3 +329,4 @@ if st.session_state.dashboard_html:
     # Render dashboard inline using Streamlit components
     import streamlit.components.v1 as components
     components.html(html, height=950, scrolling=True)
+
