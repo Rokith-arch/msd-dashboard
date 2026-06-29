@@ -1,5 +1,6 @@
 import streamlit as st
-import tempfile, os, importlib.util, sys
+import tempfile, os, importlib.util, sys, io
+import pandas as pd
 from pathlib import Path
 
 # ── Page config ─────────────────────────────────────────────────────────
@@ -160,13 +161,36 @@ PLATFORMS = {
     },
 }
 
-# ── Backend Excel files (committed to repo, no upload needed) ───────────
-EXCEL_FILES = {
-    "SFMC":      "SFMC-data.xlsx",
-    "REE":       "REE-data.xlsx",
-    "SoMe":      "SoMe(Cons4).xlsx",
-    "GCC Pulse": "GCC-pulse data.xlsx",
+# Sheet positions in the consolidated Excel (0-based index)
+# Sheet1=SFMC, Sheet2=REE, Sheet3=SoMe 2025, Sheet4=SoMe 2026, Sheet5=GCC Pulse
+CONSOLIDATED_SHEET_IDX = {
+    "SFMC":      0,
+    "REE":       1,
+    "GCC Pulse": 4,
+    "SoMe":      (2, 3),  # 2025 at index 2, 2026 at index 3
 }
+
+
+def extract_platform_sheet(xl_bytes: bytes, platform_key: str) -> str:
+    """Extract relevant sheet(s) from consolidated Excel bytes into a temp file."""
+    xl = pd.ExcelFile(io.BytesIO(xl_bytes))
+
+    if platform_key == "SoMe":
+        idx_25, idx_26 = CONSOLIDATED_SHEET_IDX["SoMe"]
+        df25 = pd.read_excel(xl, sheet_name=idx_25, header=None)
+        df26 = pd.read_excel(xl, sheet_name=idx_26, header=None)
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
+        tmp.close()
+        with pd.ExcelWriter(tmp.name, engine="openpyxl") as writer:
+            df25.to_excel(writer, sheet_name="Sheet1", index=False, header=False)
+            df26.to_excel(writer, sheet_name="Sheet2", index=False, header=False)
+    else:
+        df = pd.read_excel(xl, sheet_name=CONSOLIDATED_SHEET_IDX[platform_key], header=None)
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
+        tmp.close()
+        df.to_excel(tmp.name, index=False, header=False)
+
+    return tmp.name
 
 # ── Load dashboard module ────────────────────────────────────────────────
 @st.cache_resource
@@ -183,7 +207,6 @@ def generate_dashboard(platform_key: str, excel_path: str) -> str:
     out_path = excel_path.replace(".xlsx", "_dashboard.html").replace(".xls", "_dashboard.html")
 
     if platform_key == "SoMe":
-        import pandas as pd
         xl  = pd.ExcelFile(excel_path)
         d25 = mod.load_2025(xl)
         d26 = mod.load_2026(xl)
@@ -207,6 +230,10 @@ if "dashboard_html" not in st.session_state:
     st.session_state.dashboard_html = None
 if "dashboard_platform" not in st.session_state:
     st.session_state.dashboard_platform = None
+if "consolidated_bytes" not in st.session_state:
+    st.session_state.consolidated_bytes = None
+if "consolidated_name" not in st.session_state:
+    st.session_state.consolidated_name = None
 
 # ── Header ───────────────────────────────────────────────────────────────
 st.markdown("""
@@ -259,26 +286,29 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# ── Step 2: Upload (CLM only) or Generate (rest) ─────────────────────────
+# ── Step 2: Upload file ───────────────────────────────────────────────────
+st.markdown('<div class="step-label">Step 2 — Upload Excel File</div>', unsafe_allow_html=True)
+
 if sel == "CLM":
-    st.markdown('<div class="step-label">Step 2 — Upload Excel File</div>', unsafe_allow_html=True)
-    uploaded = st.file_uploader(
+    # CLM always gets its own separate uploader
+    clm_uploaded = st.file_uploader(
         "Drop your CLM Excel file here",
         type=["xlsx", "xls"],
-        label_visibility="collapsed"
+        label_visibility="collapsed",
+        key="clm_uploader"
     )
-    if uploaded:
+    if clm_uploaded:
         st.markdown(f"""
         <div class="success-box">
-          ✓ &nbsp; <span style="color:#0A2540;font-weight:400">{uploaded.name}</span>&nbsp; ready to process
+          ✓ &nbsp; <span style="color:#0A2540;font-weight:400">{clm_uploaded.name}</span>&nbsp; ready to process
         </div>
         """, unsafe_allow_html=True)
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown('<div class="step-label">Step 3 — Generate Dashboard</div>', unsafe_allow_html=True)
-        if st.button(f"▶  Generate CLM Dashboard", type="primary", use_container_width=True):
-            with st.spinner(f"Processing {uploaded.name}…"):
+        if st.button("▶  Generate CLM Dashboard", type="primary", use_container_width=True):
+            with st.spinner(f"Processing {clm_uploaded.name}…"):
                 tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
-                tmp.write(uploaded.read())
+                tmp.write(clm_uploaded.read())
                 tmp.close()
                 try:
                     html = generate_dashboard(sel, tmp.name)
@@ -291,19 +321,49 @@ if sel == "CLM":
                     except: pass
             st.rerun()
 else:
-    st.markdown('<div class="step-label">Step 2 — Generate Dashboard</div>', unsafe_allow_html=True)
-    excel_path = Path(__file__).parent / EXCEL_FILES[sel]
-    if not excel_path.exists():
-        st.error(f"⚠ Data file not found: {EXCEL_FILES[sel]}")
+    # Consolidated file — upload once, reuse across all non-CLM platforms
+    if st.session_state.consolidated_bytes:
+        st.markdown(f"""
+        <div class="success-box">
+          ✓ &nbsp; <span style="color:#0A2540;font-weight:400">{st.session_state.consolidated_name}</span>
+          &nbsp; loaded — switch platforms freely without re-uploading
+        </div>
+        """, unsafe_allow_html=True)
+        if st.button("Replace file", key="replace_consolidated"):
+            st.session_state.consolidated_bytes = None
+            st.session_state.consolidated_name = None
+            st.session_state.dashboard_html = None
+            st.rerun()
     else:
+        cons_uploaded = st.file_uploader(
+            "Drop your consolidated Excel file here (all platforms in one workbook)",
+            type=["xlsx", "xls"],
+            label_visibility="collapsed",
+            key="consolidated_uploader"
+        )
+        if cons_uploaded:
+            st.session_state.consolidated_bytes = cons_uploaded.read()
+            st.session_state.consolidated_name = cons_uploaded.name
+            st.rerun()
+
+    # Step 3 — only show once consolidated file is available
+    if st.session_state.consolidated_bytes:
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown('<div class="step-label">Step 3 — Generate Dashboard</div>', unsafe_allow_html=True)
         if st.button(f"▶  Generate {sel} Dashboard", type="primary", use_container_width=True):
             with st.spinner(f"Processing {sel} data…"):
+                tmp_path = None
                 try:
-                    html = generate_dashboard(sel, str(excel_path))
+                    tmp_path = extract_platform_sheet(st.session_state.consolidated_bytes, sel)
+                    html = generate_dashboard(sel, tmp_path)
                     st.session_state.dashboard_html = html
                     st.session_state.dashboard_platform = sel
                 except Exception as e:
                     st.error(f"⚠ Error processing file: {e}")
+                finally:
+                    if tmp_path:
+                        try: os.unlink(tmp_path)
+                        except: pass
             st.rerun()
 
 # ── Dashboard output ─────────────────────────────────────────────────────
