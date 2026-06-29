@@ -160,8 +160,10 @@ PLATFORMS = {
     },
 }
 
-# ── Master sheet index mapping ───────────────────────────────────────────
-# Sheet indices (0-based) within the master Excel
+# Consolidated Excel - single source of truth (same folder as ms2.py)
+CONSOLIDATED_FILE = "consolidated.xlsx"
+
+# Sheet indices (0-based) within consolidated.xlsx
 MASTER_SHEET_MAP = {
     "SFMC":      [0],        # Sheet 1
     "REE":       [1],        # Sheet 2
@@ -198,29 +200,27 @@ def extract_sheets_to_tmp(master_path: str, sheet_indices: list) -> str:
 
     return tmp.name
 
-def generate_dashboard(platform_key: str, master_path: str) -> str:
+def generate_dashboard(platform_key: str, clm_path: str = None) -> str:
+    """CLM needs clm_path; all others read straight from consolidated.xlsx."""
     import pandas as pd
     mod_name = PLATFORMS[platform_key]["module"]
     mod = load_module(mod_name)
-
+    consolidated = Path(__file__).parent / CONSOLIDATED_FILE
     tmp_path = None
     try:
         if platform_key == "CLM":
-            # CLM has its own separate upload — pass directly
-            out_path = master_path.replace(".xlsx", "_dashboard.html").replace(".xls", "_dashboard.html")
-            df, kpi_total_use, kpi_util, kpi_avg_dur = mod.load_and_clean(master_path)
+            out_path = clm_path.replace(".xlsx", "_dashboard.html").replace(".xls", "_dashboard.html")
+            df, kpi_total_use, kpi_util, kpi_avg_dur = mod.load_and_clean(clm_path)
             mod.build_dashboard(df, kpi_total_use, kpi_util, kpi_avg_dur, out_path)
         elif platform_key == "SoMe":
-            # Extract sheets 3 & 4 (index 2, 3) into a temp file
-            tmp_path = extract_sheets_to_tmp(master_path, MASTER_SHEET_MAP["SoMe"])
+            tmp_path = extract_sheets_to_tmp(str(consolidated), MASTER_SHEET_MAP["SoMe"])
             out_path = tmp_path.replace(".xlsx", "_dashboard.html")
             xl = pd.ExcelFile(tmp_path)
             d25 = mod.load_2025(xl)
             d26 = mod.load_2026(xl)
             mod.build_dashboard(d25, d26, out_path)
         else:
-            # SFMC, REE, GCC Pulse — extract single sheet into temp file
-            tmp_path = extract_sheets_to_tmp(master_path, MASTER_SHEET_MAP[platform_key])
+            tmp_path = extract_sheets_to_tmp(str(consolidated), MASTER_SHEET_MAP[platform_key])
             out_path = tmp_path.replace(".xlsx", "_dashboard.html")
             df = mod.load_and_clean(tmp_path)
             mod.build_dashboard(df, out_path)
@@ -311,55 +311,28 @@ if sel == "CLM":
                     except: pass
             st.rerun()
 else:
-    st.markdown('<div class="step-label">Step 2 — Upload Master Excel</div>', unsafe_allow_html=True)
+    st.markdown('<div class="step-label">Step 2 — Generate Dashboard</div>', unsafe_allow_html=True)
 
-    st.markdown("""
-    <div class="info-box">
-      <b>Master Excel format — 5 sheets in one file</b><br>
-      Sheet 1: SFMC &nbsp;·&nbsp; Sheet 2: REE &nbsp;·&nbsp; Sheet 3: SoMe 2025 &nbsp;·&nbsp; Sheet 4: SoMe 2026 &nbsp;·&nbsp; Sheet 5: GCC Pulse
-    </div>
-    """, unsafe_allow_html=True)
-
-    # ── Master file uploader (persists across platform switches) ───────────
-    master_uploaded = st.file_uploader(
-        "Upload master Excel (all platforms in one file)",
-        type=["xlsx", "xls"],
-        label_visibility="visible",
-        help="One file with 5 sheets: 1=SFMC, 2=REE, 3=SoMe2025, 4=SoMe2026, 5=GCC Pulse"
-    )
-
-    if master_uploaded:
-        # Clean up any previous temp file
-        if st.session_state.get("master_tmp_path"):
-            try: os.unlink(st.session_state.master_tmp_path)
-            except: pass
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
-        tmp.write(master_uploaded.read())
-        tmp.close()
-        st.session_state.master_tmp_path = tmp.name
+    consolidated = Path(__file__).parent / CONSOLIDATED_FILE
+    if not consolidated.exists():
+        st.error(f"⚠ consolidated.xlsx not found in the app folder. Place it alongside ms2.py and restart.")
+    else:
         st.markdown(f"""
-        <div class="success-box">
-          ✓ &nbsp; <span style="color:#0A2540;font-weight:400">{master_uploaded.name}</span>&nbsp; uploaded — switch platforms freely without re-uploading
+        <div class="info-box">
+          <b>Reading from consolidated.xlsx</b> — Sheet 1: SFMC &nbsp;·&nbsp; Sheet 2: REE &nbsp;·&nbsp;
+          Sheet 3: SoMe 2025 &nbsp;·&nbsp; Sheet 4: SoMe 2026 &nbsp;·&nbsp; Sheet 5: GCC Pulse
         </div>
         """, unsafe_allow_html=True)
-
-    # ── Generate button ────────────────────────────────────────────────────
-    master_path = st.session_state.get("master_tmp_path")
-
-    if not master_path or not Path(master_path).exists():
-        st.warning("⚠ Upload the master Excel above to generate a dashboard.")
-    else:
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown('<div class="step-label">Step 3 — Generate Dashboard</div>', unsafe_allow_html=True)
         if st.button(f"▶  Generate {sel} Dashboard", type="primary", use_container_width=True):
-            with st.spinner(f"Extracting {sel} data from master file…"):
+            with st.spinner(f"Reading {sel} from consolidated.xlsx…"):
                 try:
-                    html = generate_dashboard(sel, master_path)
+                    html = generate_dashboard(sel)
                     st.session_state.dashboard_html = html
                     st.session_state.dashboard_platform = sel
                 except Exception as e:
                     st.error(f"⚠ Error generating dashboard: {e}")
             st.rerun()
+
 
 # ── Dashboard output ─────────────────────────────────────────────────────
 if st.session_state.dashboard_html:
