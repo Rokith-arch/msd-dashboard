@@ -3,6 +3,7 @@ import sys
 import os
 import json
 from pathlib import Path
+import openpyxl
 
 # ── CONFIG ──────────────────────────────────────────────────────────────
 COL_BINDER      = "Binder Name"
@@ -28,45 +29,83 @@ def clean_slide_name(raw):
         parts = parts[:br_idx]
     return '_'.join(parts)
 
-EXCEL_ORIGIN = pd.Timestamp('1899-12-30')
+def read_raw_duration_column(path, col_index=4, header_row=1):
+    """
+    Read column E's RAW underlying values directly via openpyxl, completely
+    bypassing pandas' Excel->Timestamp conversion (which is where precision
+    was getting lost / rounded). Returns a list of raw values aligned to
+    data rows (row immediately after header_row onward), in file order.
 
-def extract_duration_seconds(val):
+    For time-formatted cells, openpyxl gives back a python datetime/time
+    object built from the *exact* underlying serial number — no pandas
+    rounding involved. We convert that to seconds using exact arithmetic.
+    For plain numbers (General format), the raw float comes back as-is.
     """
-    Convert an Excel duration cell to seconds, regardless of how pandas
-    happened to read it:
-      - Time-formatted cells come in as pandas Timestamp -> convert the
-        fractional-day offset from the Excel epoch into seconds.
-      - 'General'-formatted cells (or any other numeric form) are assumed
-        to already be a plain seconds value -> use as-is.
-    No rounding is applied here so downstream values stay exact, matching Excel.
+    wb = openpyxl.load_workbook(path, data_only=True)
+    ws = wb.active
+    raw_vals = []
+    for row in ws.iter_rows(min_row=header_row + 1, min_col=col_index + 1,
+                             max_col=col_index + 1, values_only=False):
+        cell = row[0]
+        raw_vals.append(cell.value)
+    wb.close()
+    return raw_vals
+
+def duration_cell_to_seconds(val):
     """
-    if pd.isnull(val):
+    Convert a single raw openpyxl cell value to seconds with EXACT precision.
+    No rounding anywhere in this path.
+    """
+    if val is None:
         return 0.0
-    if isinstance(val, pd.Timestamp):
-        return (val - EXCEL_ORIGIN).total_seconds()
-    num = pd.to_numeric(val, errors='coerce')
-    if pd.isna(num):
+    # openpyxl returns python datetime.time / datetime.datetime / timedelta
+    # for time-formatted cells — convert using exact, no-rounding arithmetic.
+    import datetime as _dt
+    if isinstance(val, _dt.timedelta):
+        return val.total_seconds()
+    if isinstance(val, _dt.time):
+        return (val.hour * 3600) + (val.minute * 60) + val.second + (val.microsecond / 1_000_000)
+    if isinstance(val, _dt.datetime):
+        # Time-only values sometimes come back anchored to 1899-12-30
+        epoch = _dt.datetime(1899, 12, 30)
+        return (val - epoch).total_seconds()
+    # Plain numeric (General format) — use exactly as stored, no scaling.
+    try:
+        num = float(val)
+    except (TypeError, ValueError):
         return 0.0
-    # Excel time serials are tiny fractions of a day (< 1.0 typically),
-    # while a 'General' seconds value for a slide duration is usually >= 1.
-    # If it looks like a day-fraction, convert; otherwise treat as seconds.
-    return float(num) * 86400 if 0 < num < 1 else float(num)
+    # If it's a bare day-fraction (Excel time serial that openpyxl didn't
+    # auto-convert), expand it; otherwise it's already seconds.
+    return num * 86400 if 0 < num < 1 else num
+
 
 def load_and_clean(path):
     df = pd.read_excel(path, header=0)
     df.columns = df.columns.str.strip()
 
+    # ── Read column E's RAW values directly from the xlsx file via openpyxl,
+    # bypassing pandas' Excel->Timestamp conversion entirely. This is what
+    # fixes the rounding: pandas' datetime parsing was losing precision
+    # (78.86 -> 78.9) before we ever got to formatting it for display.
+    raw_durations = read_raw_duration_column(path, col_index=4, header_row=1)
+    duration_seconds = [duration_cell_to_seconds(v) for v in raw_durations]
+
     # ── KPIs: always C2=col[2], D2=col[3], E2=col[4] — read by position ──
     raw = df.iloc[0]
     kpi_total_use = pd.to_numeric(raw.iloc[2], errors='coerce')
     kpi_util      = pd.to_numeric(str(raw.iloc[3]).replace('%', '').strip(), errors='coerce')
-    kpi_avg_dur = extract_duration_seconds(raw.iloc[4])
+    kpi_avg_dur   = duration_seconds[0] if duration_seconds else 0.0
     kpi_total_use = 0 if pd.isna(kpi_total_use) else float(kpi_total_use)
     kpi_util      = 0 if pd.isna(kpi_util)      else float(kpi_util)
     kpi_avg_dur   = 0 if pd.isna(kpi_avg_dur)   else float(kpi_avg_dur)
     # Excel stores % as decimals (0.322 = 32.2%) — scale up if needed
     if kpi_util <= 1.5:
         kpi_util = kpi_util * 100
+
+    # Attach the exact raw durations to df BEFORE dropping the totals row,
+    # so row alignment with the openpyxl read (which includes the totals
+    # row at index 0) stays correct.
+    df['avg_dur_raw'] = duration_seconds[:len(df)]
 
     # ── Drop totals row, then filter slide rows ──────────────────────────
     df = df.drop(index=0).reset_index(drop=True)
@@ -76,11 +115,6 @@ def load_and_clean(path):
 
     # Total Use
     df[COL_TOTAL_USE] = pd.to_numeric(df[COL_TOTAL_USE], errors='coerce').fillna(0)
-
-    # Duration: read by column position (col E = index 4) — no name dependency
-    # Uses extract_duration_seconds() so both time-formatted cells and
-    # 'General'-formatted numeric cells are handled the same, exact way.
-    df['avg_dur_raw'] = df.iloc[:, 4].apply(extract_duration_seconds)
 
     # Utilization: strip % sign then convert
     df[COL_UTILIZATION] = (
