@@ -28,61 +28,73 @@ def clean_slide_name(raw):
         parts = parts[:br_idx]
     return '_'.join(parts)
 
+EXCEL_EPOCH = pd.Timestamp('1899-12-30')
+
 def duration_to_seconds(series):
     """
     Convert the Avg. CLM Slide Duration column to exact seconds.
 
-    Excel stores this column in a time format (e.g. 00:01:18.86). Depending
-    on the file, pandas can parse this column several different ways:
-      - a full datetime64 (Timestamp) column
-      - a column of individual datetime.time objects
-      - a column of strings like "00:01:18.86"
-      - plain numeric values (already seconds, or an Excel day-fraction)
+    Diagnosed root cause (confirmed against the real file): this column's
+    Excel number_format is '#,##0.00s' — a PLAIN NUMBER format (e.g. the
+    cell literally just contains 78.86, displayed with a trailing "s").
+    It is NOT a time-of-day value. However, pandas/openpyxl's type
+    detection sees a float and, combined with the cell's underlying
+    storage, converts it into a full datetime like
+    1900-03-18 21:00:17.460000 — incorrectly treating the plain number as
+    an Excel date/time serial.
 
-    None of these are ever rounded here. Every path converts via
-    pd.to_timedelta(...).total_seconds(), which preserves the exact
-    fractional-second value, instead of letting pandas treat the value
-    as an absolute Timestamp (which is what caused 78.86 -> 78.9).
+    The fix reverses that exact (incorrect) conversion: take the
+    datetime/Timestamp pandas produced, subtract the Excel epoch
+    (1899-12-30), and convert the resulting day-delta back into seconds
+    by treating it as a serial number — i.e. the ORIGINAL number Excel
+    actually stored. This recovers the exact original value (78.86, not
+    78.9, not some date-derived figure), with no rounding at any step.
+
+    Handles every shape pandas might hand back for this column:
+      - datetime64 / Timestamp (the common case per diagnostics)
+      - datetime.time / datetime.timedelta (alternate parse paths)
+      - plain numeric values (already the raw number — used as-is)
+      - strings (parsed numerically as a fallback)
     """
     import datetime as _dt
 
-    s = series.copy()
+    def convert_one(v):
+        if v is None or (isinstance(v, float) and pd.isna(v)):
+            return 0.0
 
-    def normalize(v):
-        # datetime64 (Timestamp) cell -> "HH:MM:SS.ffffff" string
-        if isinstance(v, pd.Timestamp):
-            return v.strftime('%H:%M:%S.%f')
-        # datetime.time cell -> "HH:MM:SS.ffffff" string
+        # Timestamp / datetime -> reverse the bogus date conversion by
+        # measuring the exact distance (in days) from the Excel epoch,
+        # then treating that day-count itself as the original number.
+        if isinstance(v, (pd.Timestamp, _dt.datetime)):
+            ts = pd.Timestamp(v)
+            delta_days = (ts - EXCEL_EPOCH) / pd.Timedelta(days=1)
+            return float(delta_days)
+
+        # A bare time-of-day (no date component) -> this is a genuine
+        # HH:MM:SS value, convert directly to seconds.
         if isinstance(v, _dt.time):
-            return f"{v.hour:02d}:{v.minute:02d}:{v.second:02d}.{v.microsecond:06d}"
-        # already a timedelta -> leave as-is, to_timedelta passes it through
+            return (v.hour * 3600) + (v.minute * 60) + v.second + (v.microsecond / 1_000_000)
+
         if isinstance(v, _dt.timedelta):
-            return v
-        return v
+            return v.total_seconds()
 
-    s = s.map(normalize)
+        # Plain number (int/float) -> this IS the original value already,
+        # no conversion needed (matches the '#,##0.00s' General-number cell).
+        if isinstance(v, (int, float)):
+            return float(v)
 
-    # pd.to_timedelta interprets bare numbers as nanoseconds by default,
-    # which is wrong for this column (a bare number here means seconds).
-    # Route plain numeric values through unit='s' explicitly so they don't
-    # get silently mis-scaled.
-    is_numeric_mask = s.map(lambda v: isinstance(v, (int, float)) and not isinstance(v, bool))
-    td = pd.Series(pd.NaT, index=s.index, dtype='timedelta64[ns]')
-    if is_numeric_mask.any():
-        td.loc[is_numeric_mask] = pd.to_timedelta(s[is_numeric_mask], unit='s', errors='coerce')
-    if (~is_numeric_mask).any():
-        td.loc[~is_numeric_mask] = pd.to_timedelta(s[~is_numeric_mask], errors='coerce')
+        # String fallback -> try plain numeric parse first (handles "78.86"),
+        # then fall back to HH:MM:SS parsing for genuinely time-like strings.
+        try:
+            return float(str(v).strip())
+        except (TypeError, ValueError):
+            pass
+        td = pd.to_timedelta(v, errors='coerce')
+        if pd.notna(td):
+            return td.total_seconds()
+        return 0.0
 
-    seconds = td.dt.total_seconds()
-
-    # Anything that still failed to parse (NaT) -> fall back to treating
-    # the original raw value as a plain numeric seconds value.
-    missing = seconds.isna()
-    if missing.any():
-        fallback = pd.to_numeric(series[missing], errors='coerce')
-        seconds.loc[missing] = fallback
-
-    return seconds.fillna(0.0)
+    return series.apply(convert_one).astype(float)
 
 
 
@@ -152,17 +164,28 @@ def aggregate(df):
     grp = grp.sort_values('total_use', ascending=False).reset_index(drop=True)
     return grp
 
-def fmt_dur(seconds):
-    """Format a duration in seconds without artificial rounding, the way
-    Excel's General format would show it: full precision, trailing zeros
-    trimmed, no thousands separators."""
-    if seconds is None:
+def fmt_num(value):
+    """Generic exact-value formatter (no rounding) for non-duration numbers
+    like utilization, where there's no Excel date-serial reconstruction
+    noise to clean up."""
+    if value is None:
         return "—"
-    s = repr(float(seconds))
-    # Python repr gives full float precision; trim trailing zeros/dot
+    s = repr(float(value))
     if '.' in s:
         s = s.rstrip('0').rstrip('.')
     return s
+
+def fmt_dur(seconds, decimals=2):
+    """
+    Format a duration in seconds to match Excel's own display precision.
+    The source column's Excel number_format is '#,##0.00s' — i.e. Excel
+    itself shows exactly 2 decimal places. We match that exactly (no
+    extra floating-point noise from the day->second reconstruction, and
+    no premature rounding to fewer decimals than Excel shows).
+    """
+    if seconds is None:
+        return "—"
+    return f"{float(seconds):.{decimals}f}"
 
 def build_dashboard(df, kpi_total_use, kpi_util, kpi_avg_dur, output_path):
     total_uses = int(kpi_total_use)
@@ -320,7 +343,7 @@ def build_dashboard(df, kpi_total_use, kpi_util, kpi_avg_dur, output_path):
       <div class="metric-card c2">
         <div class="metric-icon">📊</div>
         <div class="metric-label">Total Slide Utilization</div>
-        <div class="metric-value">{fmt_dur(total_util)}%</div>
+        <div class="metric-value">{fmt_num(total_util)}%</div>
       </div>
       <div class="metric-card c3">
         <div class="metric-icon">⏱️</div>
@@ -362,12 +385,20 @@ const RALEWAY    = 'Raleway, sans-serif';
 const TABLE_DATA = {table_json};
 const CHART_DATA = {chart_json};
 
-function fmtDur(seconds) {{
-  // Full precision, no artificial rounding — matches Excel General format
-  if (seconds == null) return '—';
-  let s = String(seconds);
+function fmtNum(value) {{
+  // Full precision, no artificial rounding
+  if (value == null) return '—';
+  let s = String(value);
   if (s.includes('.')) s = s.replace(/0+$/, '').replace(/\\.$/, '');
   return s;
+}}
+
+function fmtDur(seconds) {{
+  // Matches Excel's own display precision for this column (#,##0.00s
+  // number format = 2 decimal places), not raw float noise from the
+  // date-serial reconstruction.
+  if (seconds == null) return '—';
+  return Number(seconds).toFixed(2);
 }}
 
 function renderTable() {{
@@ -379,7 +410,7 @@ function renderTable() {{
   const maxUse = TABLE_DATA[0].total_use || 1;
   tbody.innerHTML = TABLE_DATA.map((r, i) => {{
     const barW = Math.max(2, Math.round((r.total_use / maxUse) * 80));
-    const util = (r.utilization != null && r.utilization > 0) ? fmtDur(r.utilization) + '%' : '—';
+    const util = (r.utilization != null && r.utilization > 0) ? fmtNum(r.utilization) + '%' : '—';
     const dur  = (r.avg_dur != null && r.avg_dur > 0) ? fmtDur(r.avg_dur) + 's' : '—';
     return `<tr>
       <td><span class="rank">${{i+1}}</span></td>
