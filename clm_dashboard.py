@@ -28,6 +28,30 @@ def clean_slide_name(raw):
         parts = parts[:br_idx]
     return '_'.join(parts)
 
+EXCEL_ORIGIN = pd.Timestamp('1899-12-30')
+
+def extract_duration_seconds(val):
+    """
+    Convert an Excel duration cell to seconds, regardless of how pandas
+    happened to read it:
+      - Time-formatted cells come in as pandas Timestamp -> convert the
+        fractional-day offset from the Excel epoch into seconds.
+      - 'General'-formatted cells (or any other numeric form) are assumed
+        to already be a plain seconds value -> use as-is.
+    No rounding is applied here so downstream values stay exact, matching Excel.
+    """
+    if pd.isnull(val):
+        return 0.0
+    if isinstance(val, pd.Timestamp):
+        return (val - EXCEL_ORIGIN).total_seconds()
+    num = pd.to_numeric(val, errors='coerce')
+    if pd.isna(num):
+        return 0.0
+    # Excel time serials are tiny fractions of a day (< 1.0 typically),
+    # while a 'General' seconds value for a slide duration is usually >= 1.
+    # If it looks like a day-fraction, convert; otherwise treat as seconds.
+    return float(num) * 86400 if 0 < num < 1 else float(num)
+
 def load_and_clean(path):
     df = pd.read_excel(path, header=0)
     df.columns = df.columns.str.strip()
@@ -36,12 +60,7 @@ def load_and_clean(path):
     raw = df.iloc[0]
     kpi_total_use = pd.to_numeric(raw.iloc[2], errors='coerce')
     kpi_util      = pd.to_numeric(str(raw.iloc[3]).replace('%', '').strip(), errors='coerce')
-    _EXCEL_ORIGIN = pd.Timestamp('1899-12-30')
-    _dur_raw = raw.iloc[4]
-    if isinstance(_dur_raw, pd.Timestamp):
-        kpi_avg_dur = (_dur_raw - _EXCEL_ORIGIN).total_seconds() / 86400
-    else:
-        kpi_avg_dur = pd.to_numeric(_dur_raw, errors='coerce')
+    kpi_avg_dur = extract_duration_seconds(raw.iloc[4])
     kpi_total_use = 0 if pd.isna(kpi_total_use) else float(kpi_total_use)
     kpi_util      = 0 if pd.isna(kpi_util)      else float(kpi_util)
     kpi_avg_dur   = 0 if pd.isna(kpi_avg_dur)   else float(kpi_avg_dur)
@@ -59,16 +78,9 @@ def load_and_clean(path):
     df[COL_TOTAL_USE] = pd.to_numeric(df[COL_TOTAL_USE], errors='coerce').fillna(0)
 
     # Duration: read by column position (col E = index 4) — no name dependency
-    # Duration: Excel stores as time-formatted cell → pandas reads as Timestamp
-    # Raw Excel number = duration in seconds, recovered via days from Excel epoch
-    EXCEL_ORIGIN = pd.Timestamp('1899-12-30')
-    def extract_duration(val):
-        if pd.isnull(val):
-            return 0.0
-        if isinstance(val, pd.Timestamp):
-            return (val - EXCEL_ORIGIN).total_seconds() / 86400
-        return float(pd.to_numeric(val, errors='coerce') or 0.0)
-    df['avg_dur_raw'] = df.iloc[:, 4].apply(extract_duration)
+    # Uses extract_duration_seconds() so both time-formatted cells and
+    # 'General'-formatted numeric cells are handled the same, exact way.
+    df['avg_dur_raw'] = df.iloc[:, 4].apply(extract_duration_seconds)
 
     # Utilization: strip % sign then convert
     df[COL_UTILIZATION] = (
@@ -101,6 +113,18 @@ def aggregate(df):
     grp['avg_dur'] = pd.to_numeric(grp['avg_dur'], errors='coerce').fillna(0)
     grp = grp.sort_values('total_use', ascending=False).reset_index(drop=True)
     return grp
+
+def fmt_dur(seconds):
+    """Format a duration in seconds without artificial rounding, the way
+    Excel's General format would show it: full precision, trailing zeros
+    trimmed, no thousands separators."""
+    if seconds is None:
+        return "—"
+    s = repr(float(seconds))
+    # Python repr gives full float precision; trim trailing zeros/dot
+    if '.' in s:
+        s = s.rstrip('0').rstrip('.')
+    return s
 
 def build_dashboard(df, kpi_total_use, kpi_util, kpi_avg_dur, output_path):
     total_uses = int(kpi_total_use)
@@ -263,7 +287,7 @@ def build_dashboard(df, kpi_total_use, kpi_util, kpi_avg_dur, output_path):
       <div class="metric-card c3">
         <div class="metric-icon">⏱️</div>
         <div class="metric-label">Avg Slide Duration</div>
-        <div class="metric-value">{avg_dur:.1f}s</div>
+        <div class="metric-value">{fmt_dur(avg_dur)}s</div>
       </div>
     </div>
     <div class="table-card">
@@ -300,6 +324,14 @@ const RALEWAY    = 'Raleway, sans-serif';
 const TABLE_DATA = {table_json};
 const CHART_DATA = {chart_json};
 
+function fmtDur(seconds) {{
+  // Full precision, no artificial rounding — matches Excel General format
+  if (seconds == null) return '—';
+  let s = String(seconds);
+  if (s.includes('.')) s = s.replace(/0+$/, '').replace(/\\.$/, '');
+  return s;
+}}
+
 function renderTable() {{
   const tbody = document.getElementById('slideTableBody');
   if (!TABLE_DATA.length) {{
@@ -310,7 +342,7 @@ function renderTable() {{
   tbody.innerHTML = TABLE_DATA.map((r, i) => {{
     const barW = Math.max(2, Math.round((r.total_use / maxUse) * 80));
     const util = (r.utilization != null && r.utilization > 0) ? r.utilization.toFixed(1) + '%' : '—';
-    const dur  = (r.avg_dur != null && r.avg_dur > 0) ? r.avg_dur.toFixed(1) + 's' : '—';
+    const dur  = (r.avg_dur != null && r.avg_dur > 0) ? fmtDur(r.avg_dur) + 's' : '—';
     return `<tr>
       <td><span class="rank">${{i+1}}</span></td>
       <td>
