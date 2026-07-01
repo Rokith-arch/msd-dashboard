@@ -67,9 +67,19 @@ def load_and_clean(path):
     # String cols — strip whitespace. Blanks/NaN are bucketed downstream
     # (as "Unassigned") instead of being dropped from the whole dataset,
     # so a missing Campaign/TA/Market never costs you a valid delivered row.
-    for col in [COL_CAMPAIGN, COL_TA, COL_MARKET]:
+    for col in [COL_TA, COL_MARKET]:
         if col in df.columns:
             df[col] = df[col].astype(str).str.strip()
+    # Campaign: strip + collapse spaces + title-case so "FirstYearOfLife"
+    # and "firstyearof life" merge into one campaign.
+    if COL_CAMPAIGN in df.columns:
+        df[COL_CAMPAIGN] = (
+            df[COL_CAMPAIGN]
+            .astype(str)
+            .str.strip()
+            .str.replace(r'\s+', ' ', regex=True)
+            .str.title()
+        )
 
     # ── Normalise Month robustly (no hardcoded value list of "bad" strings) ──
     # Case/whitespace differences ("january", " January ") are fixed by
@@ -164,10 +174,10 @@ def build_dashboard(df, output_path):
         trend_or        = [pct(o, d) for o, d in zip(m_grp["Opens"],  m_grp["Delivered"])]
         trend_ctr       = [pct(c, d) for c, d in zip(m_grp["Clicks"], m_grp["Delivered"])]
         present = [m for m in MONTH_ORDER if m in trend_labels]
-        month_range = f"{present[0]} – {present[-1]} 2025" if present else "2025"
+        month_range = f"{present[0]} – {present[-1]} 2026" if present else "2026"
     else:
         trend_labels = trend_delivered = trend_or = trend_ctr = []
-        month_range = "2025"
+        month_range = "2026"
 
     # ── Bounce + Drop stacked ────────────────────────────────────────────
     bounce_counts = {}
@@ -543,31 +553,13 @@ def build_dashboard(df, output_path):
       <div class="chart-card">
         <div class="card-title">Delivered Emails · OR% · CTR% by Month</div>
         <div class="card-sub">Bar = Delivered (left axis) · Lines = Rates (right axis) · delivered-status rows only</div>
-        <div class="chart-wrap" style="height:280px">
+        <div class="chart-wrap" style="height:360px">
           <canvas id="trendChart"></canvas>
         </div>
       </div>
     </div>
 
-    <!-- ── Row 2: Bounce/Drop stacked + Delivery health donut ────────── -->
-    <div class="charts-row r2">
-      <div class="chart-card">
-        <div class="card-title">Bounce &amp; Drop by Month</div>
-        <div class="card-sub">Stacked — from STATUS column (not delivered rows)</div>
-        <div class="chart-wrap" style="height:230px">
-          <canvas id="bdChart"></canvas>
-        </div>
-      </div>
-      <div class="chart-card">
-        <div class="card-title">Delivery Health</div>
-        <div class="card-sub">Share of total records by STATUS</div>
-        <div class="chart-wrap" style="height:230px">
-          <canvas id="healthDonut"></canvas>
-        </div>
-      </div>
-    </div>
-
-    <!-- ── Row 3: Campaign ranking + TA donut + TA radar ─────────────── -->
+    <!-- ── Row 2: Campaign ranking + TA donut + TA radar ─────────────── -->
     <p class="section-label">Campaign &amp; TA Performance</p>
     <div class="charts-row r3">
       <div class="chart-card">
@@ -673,7 +665,7 @@ function fmt(n) {{
 function pct(num, den) {{ return den ? Math.round(num/den*1000)/10 : 0.0; }}
 
 // ── Chart instances ──────────────────────────────────────────────────────
-let chartTrend, chartBD, chartHealth, chartCamp, chartTADonut, chartTARadar, chartMkt, chartMktOR;
+let chartTrend, chartCamp, chartTADonut, chartTARadar, chartMkt, chartMktOR;
 
 function getOrCreate(id, config) {{
   const el = document.getElementById(id);
@@ -749,11 +741,18 @@ function applyFilters() {{
   const sugMax   = allRates.length ? Math.round(Math.max(...allRates)*2.2*10)/10 : 10;
 
   // ── Campaign grouping ─────────────────────────────────────────────────
+  // Normalise to title-case + collapsed spaces so "FirstYearOfLife" and
+  // "firstyearof life" are treated as the same campaign.
+  function toTitleCase(s) {{
+    return s.replace(/\s+/g,' ').trim()
+      .replace(/\w\S*/g, w => w.charAt(0).toUpperCase()+w.slice(1).toLowerCase());
+  }}
   const campMap = {{}};
   for (const r of delivered) {{
-    const c = (r[COL_CAMPAIGN]||'').trim();
-    if (!c || c.toLowerCase() === 'nan' || c.toLowerCase() === 'unassigned') continue;
-    if (EXCLUDED_CAMP.includes(c.toLowerCase())) continue;
+    const raw = (r[COL_CAMPAIGN]||'').trim();
+    if (!raw || raw.toLowerCase() === 'nan' || raw.toLowerCase() === 'unassigned') continue;
+    if (EXCLUDED_CAMP.includes(raw.toLowerCase())) continue;
+    const c = toTitleCase(raw);
     if (!campMap[c]) campMap[c] = {{del:0,open:0,clk:0}};
     campMap[c].del++;
     campMap[c].open += r[COL_OPENS]||0;
@@ -897,76 +896,7 @@ function applyFilters() {{
     }}
   }});
 
-  // 2. Bounce + Drop stacked
-  chartBD = getOrCreate('bdChart', {{
-    type:'bar',
-    data:{{
-      labels:trendMonths,
-      datasets:[
-        {{
-          label:'Bounced', data:trendBnc,
-          backgroundColor:'#E53E3E', borderRadius:4, borderSkipped:false, stack:'bd',
-          datalabels:{{anchor:'center',align:'center',color:'#fff',
-            font:{{size:10,weight:'600',family:MONTSERRAT}},
-            formatter:(v,ctx)=>{{
-              const total=ctx.chart.data.datasets.reduce((s,ds)=>s+(ds.data[ctx.dataIndex]||0),0);
-              return total>0&&v>0?v:'';
-            }}}}
-        }},
-        {{
-          label:'Dropped', data:trendDrp,
-          backgroundColor:'#D97706', borderRadius:4, borderSkipped:false, stack:'bd',
-          datalabels:{{anchor:'center',align:'center',color:'#fff',
-            font:{{size:10,weight:'600',family:MONTSERRAT}},
-            formatter:v=>v>0?v:''}}
-        }}
-      ]
-    }},
-    options:{{
-      responsive:true, maintainAspectRatio:false,
-      layout:{{padding:{{top:10}}}},
-      plugins:{{
-        legend:{{position:'top',align:'end',
-          labels:{{color:'#334155',font:{{size:11,family:RALEWAY}},boxWidth:12,usePointStyle:true}}}},
-        tooltip:{{bodyFont:{{family:MONTSERRAT,size:12}},titleFont:{{family:RALEWAY,size:12}}}}
-      }},
-      scales:{{
-        x:{{stacked:true,grid:{{display:false}},ticks:{{color:'#64748B',font:{{size:11,family:RALEWAY}}}}}},
-        y:{{stacked:true,grid:{{color:'rgba(0,0,0,0.05)'}},
-          ticks:{{color:'#64748B',font:{{size:10,family:MONTSERRAT}}}}}}
-      }}
-    }}
-  }});
-
-  // 3. Health donut
-  chartHealth = getOrCreate('healthDonut', {{
-    type:'doughnut',
-    data:{{
-      labels:['Delivered','Bounced','Dropped'],
-      datasets:[{{
-        data:[totDel,totBnc,totDrp],
-        backgroundColor:['#00857B','#E53E3E','#D97706'],
-        borderColor:'#fff', borderWidth:2
-      }}]
-    }},
-    options:{{
-      responsive:true, maintainAspectRatio:false, cutout:'62%',
-      plugins:{{
-        legend:{{position:'bottom',
-          labels:{{color:'#334155',font:{{size:11,family:RALEWAY}},boxWidth:10,padding:10}}}},
-        datalabels:{{
-          color:'#fff', font:{{size:11,weight:'700',family:MONTSERRAT}},
-          formatter:(v,ctx)=>{{
-            const tot=ctx.chart.data.datasets[0].data.reduce((a,b)=>a+b,0);
-            const p=tot?(v/tot*100):0;
-            return p>=5?p.toFixed(1)+'%':'';
-          }}
-        }}
-      }}
-    }}
-  }});
-
-  // 4. Campaign bar
+  // 2. Campaign bar
   chartCamp = getOrCreate('campChart', {{
     type:'bar',
     data:{{
@@ -992,7 +922,7 @@ function applyFilters() {{
     }}
   }});
 
-  // 5. TA donut
+  // 3. TA donut
   chartTADonut = getOrCreate('taDonutChart', {{
     type:'doughnut',
     data:{{
@@ -1020,7 +950,7 @@ function applyFilters() {{
     }}
   }});
 
-  // 6. TA radar
+  // 4. TA radar
   chartTARadar = getOrCreate('taRadarChart', {{
     type:'radar',
     data:{{
@@ -1056,7 +986,7 @@ function applyFilters() {{
     }}
   }});
 
-  // 7. Market delivered bar
+  // 5. Market delivered bar
   chartMkt = getOrCreate('mktChart', {{
     type:'bar',
     data:{{
@@ -1082,7 +1012,7 @@ function applyFilters() {{
     }}
   }});
 
-  // 8. Market OR bar
+  // 6. Market OR bar
   chartMktOR = getOrCreate('mktOrChart', {{
     type:'bar',
     data:{{
