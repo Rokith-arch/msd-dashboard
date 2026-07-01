@@ -202,7 +202,14 @@ def build_dashboard(df, output_path):
 
     # ── Campaign performance ─────────────────────────────────────────────
     if COL_CAMPAIGN in delivered_df.columns:
-        c_grp = delivered_df.groupby(COL_CAMPAIGN).agg(
+        # Rows with no TA assigned shouldn't count toward Top 10 campaign ranking
+        if COL_TA in delivered_df.columns:
+            camp_source_df = delivered_df[
+                delivered_df[COL_TA].astype(str).str.strip().str.lower().isin(['nan', '', 'unassigned']) == False
+            ]
+        else:
+            camp_source_df = delivered_df
+        c_grp = camp_source_df.groupby(COL_CAMPAIGN).agg(
             Delivered=(COL_STATUS, "count"),
             Opens=(COL_OPENS,  "sum"),
             Clicks=(COL_CLICKS, "sum")
@@ -745,13 +752,17 @@ function applyFilters() {{
       .replace(/\w\S*/g, w => w.charAt(0).toUpperCase()+w.slice(1).toLowerCase());
   }}
   function toSlug(s) {{ return s.toLowerCase().replace(/\s+/g,''); }}
+  const EXCLUDED_CAMP_SLUGS = EXCLUDED_CAMP.map(toSlug);
   const campMap = {{}};
   const campSlugDisplay = {{}};
   for (const r of delivered) {{
     const raw = (r[COL_CAMPAIGN]||'').trim();
     if (!raw || raw.toLowerCase() === 'nan' || raw.toLowerCase() === 'unassigned') continue;
     const slug = toSlug(raw);
-    if (EXCLUDED_CAMP.includes(slug)) continue;
+    if (EXCLUDED_CAMP_SLUGS.includes(slug)) continue;
+    // Skip rows with no TA assigned — they shouldn't count toward Top 10 campaign ranking
+    const rowTA = (r[COL_TA]||'').trim().toLowerCase();
+    if (!rowTA || rowTA === 'nan' || rowTA === 'unassigned') continue;
     if (!campSlugDisplay[slug]) campSlugDisplay[slug] = toTitleCase(raw);
     const key = campSlugDisplay[slug];
     if (!campMap[key]) campMap[key] = {{del:0,open:0,clk:0}};
