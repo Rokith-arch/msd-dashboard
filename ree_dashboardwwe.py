@@ -72,14 +72,25 @@ def load_and_clean(path):
             df[col] = df[col].astype(str).str.strip()
     # Campaign: strip + collapse spaces + title-case so "FirstYearOfLife"
     # and "firstyearof life" merge into one campaign.
+    # We normalise by lowercasing + removing ALL spaces to form a slug key,
+    # then pick the title-cased version of the first occurrence as display name.
     if COL_CAMPAIGN in df.columns:
-        df[COL_CAMPAIGN] = (
+        raw = (
             df[COL_CAMPAIGN]
             .astype(str)
             .str.strip()
             .str.replace(r'\s+', ' ', regex=True)
-            .str.title()
         )
+        # slug = lowercase, no spaces → used as merge key
+        slug = raw.str.lower().str.replace(r'\s+', '', regex=True)
+        # display = title-case of the collapsed version
+        display = raw.str.title()
+        # Build slug→display mapping (first occurrence wins)
+        slug_to_display = {}
+        for s, d in zip(slug, display):
+            if s not in slug_to_display:
+                slug_to_display[s] = d
+        df[COL_CAMPAIGN] = slug.map(slug_to_display)
 
     # ── Normalise Month robustly (no hardcoded value list of "bad" strings) ──
     # Case/whitespace differences ("january", " January ") are fixed by
@@ -362,14 +373,13 @@ def build_dashboard(df, output_path):
   .dash-body {{ background: #F0F4F8; padding: 22px; border-radius: 0 0 14px 14px; }}
 
   /* ── KPI cards ── */
-  .metric-grid {{ display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; margin-bottom: 22px; }}
+  .metric-grid {{ display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 22px; }}
   .metric-card {{ background: #fff; border-radius: 10px; padding: 16px 18px; border-top: 3px solid transparent; }}
   .metric-card.c1 {{ border-color: #00857B; }}
   .metric-card.c2 {{ border-color: #0A2540; }}
   .metric-card.c3 {{ border-color: #1A6FAF; }}
   .metric-card.c4 {{ border-color: #1B8A4E; }}
-  .metric-card.c5 {{ border-color: #E53E3E; }}
-  .metric-card.c6 {{ border-color: #D97706; }}
+  .metric-card.c5 {{ border-color: #0EA5A0; }}
 
   /* Raleway for label words, Montserrat for numbers */
   .metric-label {{
@@ -443,7 +453,7 @@ def build_dashboard(df, output_path):
   }}
 
   /* ── Insight box ── */
-  .insight-grid {{ display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 18px; }}
+  .insight-grid {{ display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; margin-bottom: 18px; }}
   .insight-card {{
     background: linear-gradient(135deg, #00857B08, #1A6FAF0A);
     border: 1px solid #E2E8F0; border-radius: 10px; padding: 14px 16px;
@@ -516,25 +526,15 @@ def build_dashboard(df, output_path):
         <div class="metric-sub">On delivered only</div>
       </div>
       <div class="metric-card c5">
-        <div class="metric-label">Bounced</div>
-        <div class="metric-value" id="kpi-bounced">—</div>
-        <div class="metric-sub">STATUS = bounced</div>
-      </div>
-      <div class="metric-card c6">
-        <div class="metric-label">Dropped</div>
-        <div class="metric-value" id="kpi-dropped">—</div>
-        <div class="metric-sub">STATUS = dropped</div>
+        <div class="metric-label">CTR %</div>
+        <div class="metric-value" id="kpi-ctr">—</div>
+        <div class="metric-sub">Clicks / Delivered</div>
       </div>
     </div>
 
     <!-- ── Insights ─────────────────────────────────────────────────── -->
     <p class="section-label">Key Insights</p>
     <div class="insight-grid">
-      <div class="insight-card">
-        <div class="insight-icon">📬</div>
-        <div class="insight-title">Delivery Health</div>
-        <div class="insight-text" id="insight-health">—</div>
-      </div>
       <div class="insight-card">
         <div class="insight-icon">👁️</div>
         <div class="insight-title">Engagement</div>
@@ -705,13 +705,9 @@ function applyFilters() {{
   document.getElementById('kpi-opens').textContent     = fmt(totOpen);
   document.getElementById('kpi-or').textContent        = orRate + '%';
   document.getElementById('kpi-clicks').textContent    = fmt(totClk);
-  document.getElementById('kpi-bounced').textContent   = fmt(totBnc);
-  document.getElementById('kpi-dropped').textContent   = fmt(totDrp);
+  document.getElementById('kpi-ctr').textContent       = ctrRate + '%';
 
   // ── Insights ──────────────────────────────────────────────────────────
-  document.getElementById('insight-health').innerHTML =
-    `<strong>${{fmt(totDel)}}</strong> emails successfully delivered. ` +
-    `Bounce rate: <strong>${{pct(totBnc,total)}}%</strong> · Drop rate: <strong>${{pct(totDrp,total)}}%</strong>`;
   document.getElementById('insight-engagement').innerHTML =
     `Open rate of <strong>${{orRate}}%</strong> with CTR of <strong>${{ctrRate}}%</strong>. ` +
     `Click-to-open ratio: <strong>${{ctoRate}}%</strong>`;
@@ -741,22 +737,27 @@ function applyFilters() {{
   const sugMax   = allRates.length ? Math.round(Math.max(...allRates)*2.2*10)/10 : 10;
 
   // ── Campaign grouping ─────────────────────────────────────────────────
-  // Normalise to title-case + collapsed spaces so "FirstYearOfLife" and
-  // "firstyearof life" are treated as the same campaign.
+  // Slug = lowercase, no spaces → merge key so "FirstYearOfLife" and
+  // "firstyearof life" are treated as one campaign.
+  // Display name = title-case of first occurrence.
   function toTitleCase(s) {{
     return s.replace(/\s+/g,' ').trim()
       .replace(/\w\S*/g, w => w.charAt(0).toUpperCase()+w.slice(1).toLowerCase());
   }}
+  function toSlug(s) {{ return s.toLowerCase().replace(/\s+/g,''); }}
   const campMap = {{}};
+  const campSlugDisplay = {{}};
   for (const r of delivered) {{
     const raw = (r[COL_CAMPAIGN]||'').trim();
     if (!raw || raw.toLowerCase() === 'nan' || raw.toLowerCase() === 'unassigned') continue;
-    if (EXCLUDED_CAMP.includes(raw.toLowerCase())) continue;
-    const c = toTitleCase(raw);
-    if (!campMap[c]) campMap[c] = {{del:0,open:0,clk:0}};
-    campMap[c].del++;
-    campMap[c].open += r[COL_OPENS]||0;
-    campMap[c].clk  += r[COL_CLICKS]||0;
+    const slug = toSlug(raw);
+    if (EXCLUDED_CAMP.includes(slug)) continue;
+    if (!campSlugDisplay[slug]) campSlugDisplay[slug] = toTitleCase(raw);
+    const key = campSlugDisplay[slug];
+    if (!campMap[key]) campMap[key] = {{del:0,open:0,clk:0}};
+    campMap[key].del++;
+    campMap[key].open += r[COL_OPENS]||0;
+    campMap[key].clk  += r[COL_CLICKS]||0;
   }}
   const campArr = Object.entries(campMap)
     .filter(([,v]) => v.del >= MIN_DELIVERED)
