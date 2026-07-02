@@ -21,6 +21,7 @@ from pathlib import Path
 COL_MONTH       = "Month"
 COL_CAMPAIGN    = "Campaign"
 COL_TA          = "TA"
+VALID_TA        = {"VAC", "DIA", "HAC", "ONCO"}  # only these 4 shown in TA charts
 COL_DELIVERED   = "Total Delivered"
 COL_OPENS       = "Total Opens"
 COL_CLICKS      = "Total Clicks"
@@ -131,7 +132,7 @@ def build_dashboard(df, output_path):
     ]
 
     # ── TA performance summary — exclude blank TA rows here only
-    ta_df = df[df[COL_TA] != ''].groupby(COL_TA)[[COL_DELIVERED, COL_OPENS, COL_CLICKS]].sum().reset_index()
+    ta_df = df[df[COL_TA].isin(VALID_TA)].groupby(COL_TA)[[COL_DELIVERED, COL_OPENS, COL_CLICKS]].sum().reset_index()
     ta_df = ta_df[ta_df[COL_DELIVERED] > 0]
     ta_df["OR"]  = ta_df.apply(lambda r: pct(r[COL_OPENS], r[COL_DELIVERED]), axis=1)
     ta_df["CTR"] = ta_df.apply(lambda r: pct(r[COL_CLICKS], r[COL_DELIVERED]), axis=1)
@@ -191,7 +192,7 @@ def build_dashboard(df, output_path):
 
     # ── Pre-build filter option HTML (avoids backslash-in-f-string on Python <3.12)
     # Unique filter options (sorted) — must be defined before ta_options etc.
-    all_ta        = sorted([t for t in df[COL_TA].dropna().unique().tolist() if t != ''])
+    all_ta        = sorted([t for t in df[COL_TA].dropna().unique().tolist() if t in VALID_TA])
     all_months    = [m for m in MONTH_ORDER if m in df[COL_MONTH].dropna().unique().tolist()]
     all_campaigns = sorted(df[COL_CAMPAIGN].dropna().unique().tolist())
 
@@ -743,8 +744,9 @@ function buildCampChart(rows) {{
 }}
 
 function buildTACharts(rows) {{
+  const VALID_TA_JS = new Set(['VAC','DIA','HAC','ONCO']);
   let tas = groupBy(rows,'ta',['delivered','opens','clicks'])
-    .filter(t => t.delivered > 0)
+    .filter(t => t.delivered > 0 && VALID_TA_JS.has(t.ta))
     .map(t => ({{...t, or:pct(t.opens,t.delivered), ctr:pct(t.clicks,t.delivered)}}))
     .sort((a,b) => b.delivered - a.delivered);
 
