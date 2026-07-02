@@ -5,6 +5,9 @@ import json
 from pathlib import Path
 
 # ── CONFIG ──────────────────────────────────────────────────────────────
+# Column positions (0-indexed): A=0 Campaign, B=1 Binder, C=2 Slide,
+#                               D=3 Total Use, E=4 Utilization, F=5 Avg Dur
+COL_CAMPAIGN    = 0   # A
 COL_BINDER      = "Binder Name"
 COL_SLIDE       = "Slide Name"
 COL_TOTAL_USE   = "Total Use (CLM)"
@@ -99,60 +102,92 @@ def duration_to_seconds(series):
 
 
 def load_and_clean(path):
-    df = pd.read_excel(path, header=0)
-    df.columns = df.columns.str.strip()
+    """
+    Multi-campaign Excel structure:
+      - Col A = Campaign name (filled only on the campaign's name row)
+      - Col B = Binder Name, C = Slide Name, D = Total Use, E = Utilization, F = Avg Dur
+      - Pattern per campaign:  [totals row (B-F filled, A empty)]
+                               [campaign name row (A filled, B-F empty or repeated)]
+                               [data rows ...]
+      So: when A is non-empty → that row is the campaign label row,
+          the row immediately ABOVE it is the totals row for that campaign.
+    """
+    raw_df = pd.read_excel(path, header=0)
+    raw_df.columns = raw_df.columns.str.strip()
 
-    # ── Duration column (col E = index 4): convert to exact seconds via
-    # pd.to_timedelta(...).total_seconds(), never treated as a Timestamp.
-    # This preserves full precision (78.86 stays 78.86, no rounding).
-    duration_seconds = duration_to_seconds(df.iloc[:, 4])
+    # Avg Duration is now col F (index 5)
+    duration_seconds = duration_to_seconds(raw_df.iloc[:, 5])
+    raw_df['avg_dur_raw'] = duration_seconds
 
-    # ── KPIs: always C2=col[2], D2=col[3], E2=col[4] — read by position ──
-    raw = df.iloc[0]
-    kpi_total_use = pd.to_numeric(raw.iloc[2], errors='coerce')
-    kpi_util      = pd.to_numeric(str(raw.iloc[3]).replace('%', '').strip(), errors='coerce')
-    kpi_avg_dur   = duration_seconds.iloc[0] if len(duration_seconds) else 0.0
-    kpi_total_use = 0 if pd.isna(kpi_total_use) else float(kpi_total_use)
-    kpi_util      = 0 if pd.isna(kpi_util)      else float(kpi_util)
-    kpi_avg_dur   = 0 if pd.isna(kpi_avg_dur)   else float(kpi_avg_dur)
-    # Excel stores % as decimals (0.322 = 32.2%) — scale up if needed
-    if kpi_util <= 1.5:
-        kpi_util = kpi_util * 100
+    # ── Identify campaign name rows (col A non-empty) ─────────────────────
+    col_a = raw_df.iloc[:, COL_CAMPAIGN].astype(str).str.strip()
+    campaign_name_rows = raw_df.index[col_a.replace('nan', '') != ''].tolist()
 
-    # Attach exact per-row durations (still aligned 1:1 with df, including
-    # the totals row at index 0, before it gets dropped below).
-    df['avg_dur_raw'] = duration_seconds
+    campaigns = {}   # campaign_name -> (kpis_dict, slide_df)
 
-    # ── Drop totals row, then filter slide rows ──────────────────────────
-    df = df.drop(index=0).reset_index(drop=True)
-    df = df[df[COL_SLIDE].notna()]
-    df = df[df[COL_SLIDE].astype(str).str.strip() != '']
-    df = df[~df[COL_SLIDE].astype(str).str.lower().str.contains('total', na=False)]
+    for idx, name_row_idx in enumerate(campaign_name_rows):
+        campaign_name = col_a.iloc[name_row_idx]
 
-    # Total Use
-    df[COL_TOTAL_USE] = pd.to_numeric(df[COL_TOTAL_USE], errors='coerce').fillna(0)
+        # Totals row is the row immediately above the campaign name row
+        totals_row_idx = name_row_idx - 1
 
-    # Utilization: strip % sign then convert
-    df[COL_UTILIZATION] = (
-        df[COL_UTILIZATION]
-        .astype(str)
-        .str.replace('%', '', regex=False)
-        .str.strip()
-    )
-    df[COL_UTILIZATION] = pd.to_numeric(df[COL_UTILIZATION], errors='coerce').fillna(0)
-    # If stored as decimal (0.023 = 2.3%) scale up
-    sample = df[COL_UTILIZATION][df[COL_UTILIZATION] > 0]
-    if len(sample) and sample.median() < 1.5:
-        df[COL_UTILIZATION] = df[COL_UTILIZATION] * 100
+        # KPIs from totals row: D=col[3] Total Use, E=col[4] Util, F=col[5] Avg Dur
+        if totals_row_idx >= 0:
+            totals_raw = raw_df.iloc[totals_row_idx]
+            kpi_total_use = pd.to_numeric(totals_raw.iloc[3], errors='coerce')
+            kpi_util      = pd.to_numeric(str(totals_raw.iloc[4]).replace('%', '').strip(), errors='coerce')
+            kpi_avg_dur   = duration_seconds.iloc[totals_row_idx]
+        else:
+            kpi_total_use, kpi_util, kpi_avg_dur = 0.0, 0.0, 0.0
 
-    # Drop blank/junk rows
-    df = df[df[COL_TOTAL_USE] > 0]
+        kpi_total_use = 0.0 if pd.isna(kpi_total_use) else float(kpi_total_use)
+        kpi_util      = 0.0 if pd.isna(kpi_util)      else float(kpi_util)
+        kpi_avg_dur   = 0.0 if pd.isna(kpi_avg_dur)   else float(kpi_avg_dur)
+        if kpi_util <= 1.5:
+            kpi_util = kpi_util * 100
 
-    # Clean slide names
-    df['slide_clean'] = df[COL_SLIDE].apply(clean_slide_name)
-    df = df[df['slide_clean'] != '']
+        # Data rows: from (name_row_idx + 1) up to next campaign name row (exclusive)
+        if idx + 1 < len(campaign_name_rows):
+            next_name_row = campaign_name_rows[idx + 1]
+            # exclude the totals row of the next campaign (one before next name row)
+            end_idx = next_name_row - 1
+        else:
+            end_idx = len(raw_df)
 
-    return df, kpi_total_use, kpi_util, kpi_avg_dur
+        data_rows = raw_df.iloc[name_row_idx + 1 : end_idx].copy()
+
+        # Filter to valid slide rows
+        data_rows = data_rows[data_rows[COL_SLIDE].notna()]
+        data_rows = data_rows[data_rows[COL_SLIDE].astype(str).str.strip() != '']
+        data_rows = data_rows[~data_rows[COL_SLIDE].astype(str).str.lower().str.contains('total', na=False)]
+
+        # Total Use
+        data_rows[COL_TOTAL_USE] = pd.to_numeric(data_rows[COL_TOTAL_USE], errors='coerce').fillna(0)
+
+        # Utilization
+        data_rows[COL_UTILIZATION] = (
+            data_rows[COL_UTILIZATION]
+            .astype(str)
+            .str.replace('%', '', regex=False)
+            .str.strip()
+        )
+        data_rows[COL_UTILIZATION] = pd.to_numeric(data_rows[COL_UTILIZATION], errors='coerce').fillna(0)
+        sample = data_rows[COL_UTILIZATION][data_rows[COL_UTILIZATION] > 0]
+        if len(sample) and sample.median() < 1.5:
+            data_rows[COL_UTILIZATION] = data_rows[COL_UTILIZATION] * 100
+
+        data_rows = data_rows[data_rows[COL_TOTAL_USE] > 0]
+        data_rows['slide_clean'] = data_rows[COL_SLIDE].apply(clean_slide_name)
+        data_rows = data_rows[data_rows['slide_clean'] != '']
+
+        campaigns[campaign_name] = {
+            'kpi_total_use': kpi_total_use,
+            'kpi_util':      kpi_util,
+            'kpi_avg_dur':   kpi_avg_dur,
+            'df':            data_rows.reset_index(drop=True)
+        }
+
+    return campaigns
 
 def aggregate(df):
     grp = df.groupby('slide_clean', as_index=False).agg(
@@ -187,19 +222,25 @@ def fmt_dur(seconds, decimals=2):
         return "—"
     return f"{float(seconds):.{decimals}f}"
 
-def build_dashboard(df, kpi_total_use, kpi_util, kpi_avg_dur, output_path):
-    total_uses = int(kpi_total_use)
-    total_util = float(kpi_util)
-    avg_dur    = float(kpi_avg_dur)
+def build_dashboard(campaigns, output_path):
+    # Build a JS-embeddable dict of all campaign data
+    all_campaigns_data = {}
+    for name, camp in campaigns.items():
+        agg = aggregate(camp['df'])
+        top_n      = min(10, max(5, len(agg)))
+        table_rows = agg.head(top_n).to_dict(orient='records')
+        chart_rows = agg.head(10).to_dict(orient='records')
+        all_campaigns_data[name] = {
+            'kpi_total_use': camp['kpi_total_use'],
+            'kpi_util':      round(camp['kpi_util'], 2),
+            'kpi_avg_dur':   round(camp['kpi_avg_dur'], 2),
+            'table':         table_rows,
+            'chart':         chart_rows,
+            'top_n':         top_n,
+        }
 
-    agg = aggregate(df)
-
-    top_n       = min(10, max(5, len(agg)))
-    table_rows  = agg.head(top_n)
-    chart_rows  = agg.head(10).copy()
-
-    table_json  = json.dumps(table_rows.to_dict(orient='records'))
-    chart_json  = json.dumps(chart_rows.to_dict(orient='records'))
+    campaign_names = list(campaigns.keys())
+    all_data_json  = json.dumps(all_campaigns_data)
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -239,6 +280,26 @@ def build_dashboard(df, kpi_total_use, kpi_util, kpi_avg_dur, output_path):
     border-radius: 20px; margin-left: 14px;
   }}
   .dash-body {{ background: #F0F4F8; padding: 22px; border-radius: 0 0 12px 12px; }}
+  .filter-bar {{
+    background: #fff; border-radius: 10px;
+    padding: 14px 20px; margin-bottom: 18px;
+    display: flex; align-items: center; gap: 14px;
+    border-left: 4px solid #152548;
+  }}
+  .filter-label {{
+    font-family: 'Montserrat', sans-serif;
+    font-size: 12px; font-weight: 600; color: #152548;
+    white-space: nowrap;
+  }}
+  .filter-select {{
+    font-family: 'Raleway', sans-serif;
+    font-size: 13px; color: #152548;
+    border: 1.5px solid #CBD5E1; border-radius: 7px;
+    padding: 7px 14px; background: #F8FAFC;
+    cursor: pointer; min-width: 280px;
+    outline: none;
+  }}
+  .filter-select:focus {{ border-color: #00857B; }}
   .metric-grid {{
     display: grid;
     grid-template-columns: repeat(3, 1fr);
@@ -334,26 +395,32 @@ def build_dashboard(df, kpi_total_use, kpi_util, kpi_avg_dur, output_path):
     </div>
   </div>
   <div class="dash-body">
+    <div class="filter-bar">
+      <span class="filter-label">📁 Campaign</span>
+      <select class="filter-select" id="campaignSelect" onchange="onCampaignChange()">
+        {"".join(f'<option value="{n}">{n}</option>' for n in campaign_names)}
+      </select>
+    </div>
     <div class="metric-grid">
       <div class="metric-card c1">
         <div class="metric-icon">🖥️</div>
         <div class="metric-label">Total CLM Uses</div>
-        <div class="metric-value">{total_uses:,}</div>
+        <div class="metric-value" id="kpiTotalUse">—</div>
       </div>
       <div class="metric-card c2">
         <div class="metric-icon">📊</div>
         <div class="metric-label">Total Slide Utilization</div>
-        <div class="metric-value">{fmt_num(total_util)}%</div>
+        <div class="metric-value" id="kpiUtil">—</div>
       </div>
       <div class="metric-card c3">
         <div class="metric-icon">⏱️</div>
         <div class="metric-label">Avg Slide Duration</div>
-        <div class="metric-value">{fmt_dur(avg_dur)}s</div>
+        <div class="metric-value" id="kpiAvgDur">—</div>
       </div>
     </div>
     <div class="table-card">
       <div class="card-title" style="margin-bottom:4px;">Slide Performance Table</div>
-      <div class="card-sub">Sorted by Total Use (CLM) · Top {top_n} slides</div>
+      <div class="card-sub" id="tableSubtitle">Sorted by Total Use (CLM)</div>
       <table class="tbl">
         <thead>
           <tr>
@@ -382,11 +449,11 @@ def build_dashboard(df, kpi_total_use, kpi_util, kpi_avg_dur, output_path):
 Chart.register(ChartDataLabels);
 const MONTSERRAT = 'Montserrat, sans-serif';
 const RALEWAY    = 'Raleway, sans-serif';
-const TABLE_DATA = {table_json};
-const CHART_DATA = {chart_json};
+const ALL_DATA   = {all_data_json};
+
+let chartInstance = null;
 
 function fmtNum(value) {{
-  // Full precision, no artificial rounding
   if (value == null) return '—';
   let s = String(value);
   if (s.includes('.')) s = s.replace(/0+$/, '').replace(/\\.$/, '');
@@ -394,21 +461,34 @@ function fmtNum(value) {{
 }}
 
 function fmtDur(seconds) {{
-  // Matches Excel's own display precision for this column (#,##0.00s
-  // number format = 2 decimal places), not raw float noise from the
-  // date-serial reconstruction.
+  // Always exactly 2 decimal places — e.g. 118.78, 63.31
   if (seconds == null) return '—';
   return Number(seconds).toFixed(2);
 }}
 
-function renderTable() {{
+function onCampaignChange() {{
+  const name = document.getElementById('campaignSelect').value;
+  const camp = ALL_DATA[name];
+  if (!camp) return;
+
+  // KPI cards
+  document.getElementById('kpiTotalUse').textContent  = Math.round(camp.kpi_total_use).toLocaleString();
+  document.getElementById('kpiUtil').textContent       = fmtNum(camp.kpi_util) + '%';
+  document.getElementById('kpiAvgDur').textContent     = fmtDur(camp.kpi_avg_dur) + 's';
+  document.getElementById('tableSubtitle').textContent = `Sorted by Total Use (CLM) · Top ${{camp.top_n}} slides`;
+
+  renderTable(camp.table);
+  renderChart(camp.chart);
+}}
+
+function renderTable(tableData) {{
   const tbody = document.getElementById('slideTableBody');
-  if (!TABLE_DATA.length) {{
+  if (!tableData || !tableData.length) {{
     tbody.innerHTML = '<tr><td colspan="5"><div class="no-data">No data found</div></td></tr>';
     return;
   }}
-  const maxUse = TABLE_DATA[0].total_use || 1;
-  tbody.innerHTML = TABLE_DATA.map((r, i) => {{
+  const maxUse = tableData[0].total_use || 1;
+  tbody.innerHTML = tableData.map((r, i) => {{
     const barW = Math.max(2, Math.round((r.total_use / maxUse) * 80));
     const util = (r.utilization != null && r.utilization > 0) ? fmtNum(r.utilization) + '%' : '—';
     const dur  = (r.avg_dur != null && r.avg_dur > 0) ? fmtDur(r.avg_dur) + 's' : '—';
@@ -425,11 +505,12 @@ function renderTable() {{
   }}).join('');
 }}
 
-function renderChart() {{
-  const labels = CHART_DATA.map(r => r.slide_clean);
-  const values = CHART_DATA.map(r => r.total_use);
+function renderChart(chartData) {{
+  if (chartInstance) {{ chartInstance.destroy(); chartInstance = null; }}
+  const labels = chartData.map(r => r.slide_clean);
+  const values = chartData.map(r => r.total_use);
   const colors = values.map((_, i) => i === 0 ? '#152548' : '#00857B');
-  new Chart(document.getElementById('clmChart'), {{
+  chartInstance = new Chart(document.getElementById('clmChart'), {{
     type: 'bar',
     data: {{
       labels,
@@ -471,8 +552,8 @@ function renderChart() {{
   }});
 }}
 
-renderTable();
-renderChart();
+// Load first campaign on page open
+onCampaignChange();
 </script>
 </body>
 </html>"""
@@ -493,8 +574,8 @@ if __name__ == "__main__":
         sys.exit(1)
 
     html_out = str(Path(excel_path).stem) + "_clm_dashboard.html"
-    df, kpi_total_use, kpi_util, kpi_avg_dur = load_and_clean(excel_path)
-    build_dashboard(df, kpi_total_use, kpi_util, kpi_avg_dur, html_out)
+    campaigns = load_and_clean(excel_path)
+    build_dashboard(campaigns, html_out)
 
     try:
         from playwright.sync_api import sync_playwright
