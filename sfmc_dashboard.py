@@ -59,7 +59,27 @@ def load_and_clean(path):
         df = df[df[COL_CAMPAIGN] != '']
 
     # Clean Month — keep only valid months
+    # Excel sometimes auto-converts month name text to a date serial/datetime.
+    # Recover the month name from whatever shape pandas returns.
     if COL_MONTH in df.columns:
+        import datetime as _dt
+        def _to_month_name(v):
+            if v is None or (isinstance(v, float) and pd.isna(v)):
+                return None
+            if isinstance(v, str):
+                s = v.strip()
+                # already a valid month name?
+                if s in MONTH_ORDER:
+                    return s
+                # try parsing as date string
+                try:
+                    return pd.to_datetime(s).strftime("%B")
+                except Exception:
+                    return s
+            if isinstance(v, (pd.Timestamp, _dt.datetime, _dt.date)):
+                return pd.Timestamp(v).strftime("%B")
+            return str(v).strip()
+        df[COL_MONTH] = df[COL_MONTH].apply(_to_month_name)
         df = df[df[COL_MONTH].notna()]
         df = df[df[COL_MONTH].isin(MONTH_ORDER)]
 
