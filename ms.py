@@ -181,18 +181,18 @@ def extract_platform_sheet(xl_bytes: bytes, platform_key: str) -> str:
 
     if platform_key == "SoMe":
         idx_25, idx_26 = CONSOLIDATED_SHEET_IDX["SoMe"]
-        df25 = pd.read_excel(xl, sheet_name=idx_25, header=None)
-        df26 = pd.read_excel(xl, sheet_name=idx_26, header=None)
+        df25 = pd.read_excel(xl, sheet_name=idx_25, header=0)
+        df26 = pd.read_excel(xl, sheet_name=idx_26, header=0)
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
         tmp.close()
         with pd.ExcelWriter(tmp.name, engine="openpyxl") as writer:
-            df25.to_excel(writer, sheet_name="Sheet1", index=False, header=False)
-            df26.to_excel(writer, sheet_name="Sheet2", index=False, header=False)
+            df25.to_excel(writer, sheet_name="Sheet1", index=False, header=True)
+            df26.to_excel(writer, sheet_name="Sheet2", index=False, header=True)
     else:
-        df = pd.read_excel(xl, sheet_name=CONSOLIDATED_SHEET_IDX[platform_key], header=None)
+        df = pd.read_excel(xl, sheet_name=CONSOLIDATED_SHEET_IDX[platform_key], header=0)
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
         tmp.close()
-        df.to_excel(tmp.name, index=False, header=False)
+        df.to_excel(tmp.name, index=False, header=True)
 
     return tmp.name
 
@@ -216,8 +216,8 @@ def generate_dashboard(platform_key: str, excel_path: str) -> str:
         d26 = mod.load_2026(xl)
         mod.build_dashboard(d25, d26, out_path)
     elif platform_key == "CLM":
-        campaigns = mod.load_and_clean(excel_path)
-        mod.build_dashboard(campaigns, out_path)
+        df, kpi_total_use, kpi_util, kpi_avg_dur = mod.load_and_clean(excel_path)
+        mod.build_dashboard(df, kpi_total_use, kpi_util, kpi_avg_dur, out_path)
     else:
         df = mod.load_and_clean(excel_path)
         mod.build_dashboard(df, out_path)
