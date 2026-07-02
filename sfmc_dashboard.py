@@ -46,11 +46,10 @@ def load_and_clean(path):
     for col in numeric_cols:
         df[col] = df[col].fillna(0)
 
-    # Clean TA — remove nan strings
+    # Clean TA — normalize blanks to empty string, but keep them in df
     if COL_TA in df.columns:
         df[COL_TA] = df[COL_TA].astype(str).str.strip()
-        df = df[df[COL_TA].str.lower() != 'nan']
-        df = df[df[COL_TA] != '']
+        df[COL_TA] = df[COL_TA].replace('nan', '')
 
     # Clean Campaign — remove nan strings
     if COL_CAMPAIGN in df.columns:
@@ -131,8 +130,8 @@ def build_dashboard(df, output_path):
         for _, r in c_df.iterrows()
     ]
 
-    # ── TA performance summary (filter nan TA already done)
-    ta_df = df.groupby(COL_TA)[[COL_DELIVERED, COL_OPENS, COL_CLICKS]].sum().reset_index()
+    # ── TA performance summary — exclude blank TA rows here only
+    ta_df = df[df[COL_TA] != ''].groupby(COL_TA)[[COL_DELIVERED, COL_OPENS, COL_CLICKS]].sum().reset_index()
     ta_df = ta_df[ta_df[COL_DELIVERED] > 0]
     ta_df["OR"]  = ta_df.apply(lambda r: pct(r[COL_OPENS], r[COL_DELIVERED]), axis=1)
     ta_df["CTR"] = ta_df.apply(lambda r: pct(r[COL_CLICKS], r[COL_DELIVERED]), axis=1)
@@ -192,7 +191,7 @@ def build_dashboard(df, output_path):
 
     # ── Pre-build filter option HTML (avoids backslash-in-f-string on Python <3.12)
     # Unique filter options (sorted) — must be defined before ta_options etc.
-    all_ta        = sorted(df[COL_TA].dropna().unique().tolist())
+    all_ta        = sorted([t for t in df[COL_TA].dropna().unique().tolist() if t != ''])
     all_months    = [m for m in MONTH_ORDER if m in df[COL_MONTH].dropna().unique().tolist()]
     all_campaigns = sorted(df[COL_CAMPAIGN].dropna().unique().tolist())
 
