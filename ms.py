@@ -216,8 +216,8 @@ def generate_dashboard(platform_key: str, excel_path: str) -> str:
         d26 = mod.load_2026(xl)
         mod.build_dashboard(d25, d26, out_path)
     elif platform_key == "CLM":
-        df, kpi_total_use, kpi_util, kpi_avg_dur = mod.load_and_clean(excel_path)
-        mod.build_dashboard(df, kpi_total_use, kpi_util, kpi_avg_dur, out_path)
+        campaigns = mod.load_and_clean(excel_path)
+        mod.build_dashboard(campaigns, out_path)
     else:
         df = mod.load_and_clean(excel_path)
         mod.build_dashboard(df, out_path)
