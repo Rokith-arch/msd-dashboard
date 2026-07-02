@@ -21,7 +21,7 @@ from pathlib import Path
 COL_MONTH       = "Month"
 COL_CAMPAIGN    = "Campaign"
 COL_TA          = "TA"
-VALID_TA        = {"diabetes", "vaccines", "hac", "onco"}  # lowercase for case-insensitive match
+VALID_TA        = {"diabetes", "vaccines", "hac", "oncology"}  # lowercase for case-insensitive match
 COL_DELIVERED   = "Total Delivered"
 COL_OPENS       = "Total Opens"
 COL_CLICKS      = "Total Clicks"
@@ -744,7 +744,7 @@ function buildCampChart(rows) {{
 }}
 
 function buildTACharts(rows) {{
-  const VALID_TA_JS = new Set(['diabetes','vaccines','hac','onco']);
+  const VALID_TA_JS = new Set(['diabetes','vaccines','hac','oncology']);
   let tas = groupBy(rows,'ta',['delivered','opens','clicks'])
     .filter(t => t.delivered > 0 && VALID_TA_JS.has(t.ta.toLowerCase()))
     .map(t => ({{...t, or:pct(t.opens,t.delivered), ctr:pct(t.clicks,t.delivered)}}))
